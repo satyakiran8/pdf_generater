@@ -8,14 +8,8 @@ from reportlab.lib import colors
 from datetime import datetime
 
 def create_dpr_pdf(project_name, candidate_name, address):
-    """
-    DPR Template PDF ni create chestundi - compact spacing tho
-    
-    Arguments:
-        project_name: Project name (filename lo use avuthundi)
-        candidate_name: Candidate/SPV name
-        address: Address details
-    """
+
+
     
     # PDF filename with project name and timestamp
     downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")

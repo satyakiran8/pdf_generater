@@ -7,464 +7,120 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib import colors
 from datetime import datetime
 
-def get_optional_input(prompt, default="", allow_skip_all=False):
-    """Helper function to get optional input"""
-    if allow_skip_all:
-        value = input(f"{prompt} (Press Enter to skip, type 'done' to finish and generate PDF): ").strip()
-        if value.lower() == 'done':
-            return 'DONE'
-    else:
-        value = input(f"{prompt} (Press Enter to skip): ").strip()
-    return value if value else default
-
-def get_section2_data():
-    """Get Section 2 table data - constant data, no input needed"""
-    return [
-        ['Name of applicant,\ncontact details, etc', 'As CFC Registered address / administrative address may be different\nfrom CFC facilities address, the same may be provided'],
-        ['Location of Common\nFacility Centre', 'Address where facilities are proposed may be provided'],
-        ['Main facilities being\nproposed', 'Details of facilities to be provided']
-    ]
-
-def get_spv_data(candidate_name, address):
-    """Get SPV Information table data"""
-    print("\n=== Section 3: Information about SPV ===")
-    print("(Type 'done' at any point to skip remaining fields and generate PDF)")
-    name_address = f"{candidate_name}, {address}"
-    
-    spv_data = [
-        ['S. No.', 'Description', 'Details/ Compliance'],
-        ['(i)', 'Name and address', name_address],
-    ]
-    
-    fields = [
-        ('(ii)', 'Registration details of SPV\n(including registration as Section\n8 company under the Companies\nAct 2013)'),
-        ('(iii)', 'Names of the State Govt and\nMSME officials in SPV'),
-        ('(iv)', 'Date of formation of the\ncompany'),
-        ('(v)', 'Date of commencement of\nbusiness'),
-        ('(vi)', 'Number of MSE Member Units'),
-        ('(vii)', 'Bye laws or MoA and AoA\nsubmitted'),
-        ('(viii)', 'Main objectives of the SPV'),
-        ('(ix)', 'SPV to have a character of\ninclusiveness wherein provision\nfor enrolling new members to\nenable prospective entrepreneurs\nin the cluster to utilise the\nfacility'),
-        ('(x)', "Clause about 'Profits/surplus\n to be ploughed back\n to CFC' included or not"),
-        ('(xi)', 'Authorized share capital'),
-        ('(xii)', 'Shareholding Pattern\n(Annexure-3 to be filled in)'),
-    ]
-    
-    for sno, desc in fields:
-        value = get_optional_input(f"{sno} {desc.replace(chr(10), ' ')}", allow_skip_all=True)
-        if value == 'DONE':
-            spv_data.append([sno, desc, ''])
-            # Fill remaining fields with empty strings
-            remaining_idx = fields.index((sno, desc)) + 1
-            for rem_sno, rem_desc in fields[remaining_idx:]:
-                spv_data.append([rem_sno, rem_desc, ''])
-            return spv_data, True
-        spv_data.append([sno, desc, value])
-    
-    return spv_data, False
-
-def get_spv_data2():
-    """Get continuation of SPV table"""
-    print("\n=== Section 3 Continued ===")
-    spv_data2 = []
-    
-    fields = [
-        ('(xiii)', 'Commitment letter for SPV\nUpfront contribution'),
-        ('(xiv)', 'Project specific A/c in schedule\nA bank'),
-        ('(xv)', "Clause about 'CFC may be\n utilised by SPV members as also\nothers in a cluster and \nEvidence for SPV members'\nability to utilise at least 60% of installed capacity'"),
-        ('(xvi)', 'Main Role of SPV'),
-        ('(xvii)', 'Trust building of SPV so that\nCFC may be successful'),
-    ]
-    
-    for sno, desc in fields:
-        value = get_optional_input(f"{sno} {desc.replace(chr(10), ' ')}", allow_skip_all=True)
-        if value == 'DONE':
-            spv_data2.append([sno, desc, ''])
-            # Fill remaining fields with empty strings
-            remaining_idx = fields.index((sno, desc)) + 1
-            for rem_sno, rem_desc in fields[remaining_idx:]:
-                spv_data2.append([rem_sno, rem_desc, ''])
-            return spv_data2, True
-        spv_data2.append([sno, desc, value])
-    
-    return spv_data2, False
-
-def get_promoters_data():
-    """Get promoters table data"""
-    print("\n=== Section 4: Details of Project Promoters ===")
-    num_promoters = input("How many promoters to add? (Press Enter for 0, type 'done' to skip): ").strip()
-    
-    if num_promoters.lower() == 'done':
-        # Return empty promoters table
-        return [
-            ['Name of the\nOffice bearers\n of the SPV', '', '', '', '', '', '', ''],
-            ['Age (years)', '', '', '', '', '', '', ''],
-            ['Educational\n Qualification', '', '', '', '', '', '', ''],
-            ['Relationship with \nthe chief promoter', '', '', '', '', '', '', ''],
-            ['Experience in what\n capacity/ industry/ years', '', '', '', '', '', '', ''],
-            ['Income Tax / Wealth \nTax Status \n(returns for 3 years\n to be furnished)', '', '', '', '', '', '', ''],
-            ['Other concerns \ninterest / in which capacity \n/financial stake', '', '', '', '', '', '', '']
-        ], True
-    
-    num_promoters = int(num_promoters) if num_promoters.isdigit() else 0
-    
-    promoters_data = [
-        ['Name of the\nOffice bearers\n of the SPV', '', '', '', '', '', '', ''],
-        ['Age (years)', '', '', '', '', '', '', ''],
-        ['Educational\n Qualification', '', '', '', '', '', '', ''],
-        ['Relationship with \nthe chief promoter', '', '', '', '', '', '', ''],
-        ['Experience in what\n capacity/ industry/ years', '', '', '', '', '', '', ''],
-        ['Income Tax / Wealth \nTax Status \n(returns for 3 years\n to be furnished)', '', '', '', '', '', '', ''],
-        ['Other concerns \ninterest / in which capacity \n/financial stake', '', '', '', '', '', '', '']
-    ]
-    
-    for i in range(min(num_promoters, 7)):  # Max 7 columns after first
-        print(f"\n--- Promoter {i+1} ---")
-        
-        name = get_optional_input("Name", allow_skip_all=True)
-        if name == 'DONE':
-            return promoters_data, True
-        promoters_data[0][i+1] = name
-        
-        age = get_optional_input("Age", allow_skip_all=True)
-        if age == 'DONE':
-            return promoters_data, True
-        promoters_data[1][i+1] = age
-        
-        edu = get_optional_input("Educational Qualification", allow_skip_all=True)
-        if edu == 'DONE':
-            return promoters_data, True
-        promoters_data[2][i+1] = edu
-        
-        rel = get_optional_input("Relationship with chief promoter", allow_skip_all=True)
-        if rel == 'DONE':
-            return promoters_data, True
-        promoters_data[3][i+1] = rel
-        
-        exp = get_optional_input("Experience", allow_skip_all=True)
-        if exp == 'DONE':
-            return promoters_data, True
-        promoters_data[4][i+1] = exp
-        
-        tax = get_optional_input("Tax Status", allow_skip_all=True)
-        if tax == 'DONE':
-            return promoters_data, True
-        promoters_data[5][i+1] = tax
-        
-        concerns = get_optional_input("Other concerns", allow_skip_all=True)
-        if concerns == 'DONE':
-            return promoters_data, True
-        promoters_data[6][i+1] = concerns
-    
-    return promoters_data, False
-
-def get_implementation_data():
-    """Get implementing arrangements data"""
-    print("\n=== Section 6: Implementing Arrangements ===")
-    
-    impl_data = [
-        ['Description', 'Compliance'],
-        ['a. Name of Implementation Agency', get_optional_input("Implementation Agency Name")],
-        ['b. Role of Implementing Agency (e.g. implementation and monitoring of project,\nsending regular progress reports, issuing proper UCs, )', get_optional_input("Role of Implementation Agency")],
-        ['c. Implementation Period', get_optional_input("Implementation Period")],
-        ['d. Commitment of State Government upfront contribution', get_optional_input("State Govt Commitment")],
-        ['e. Commitment of Loans (Working capital and/ or term loan)', get_optional_input("Loan Commitment")],
-    ]
-    
-    return impl_data
-
-def get_manpower_data():
-    """Get manpower table data"""
-    print("\n=== Section 8: Manpower Details ===")
-    num_employees = input("How many employee types to add? (Press Enter for 0): ").strip()
-    num_employees = int(num_employees) if num_employees.isdigit() else 0
-    
-    manpower_data = [
-        ['S. No.', 'Description of the employee', 'Number'],
-    ]
-    
-    for i in range(max(num_employees, 4)):  # Minimum 4 rows
-        if i < num_employees:
-            desc = get_optional_input(f"Employee {i+1} Description")
-            num = get_optional_input(f"Employee {i+1} Number")
-            manpower_data.append([str(i+1), desc, num])
-        else:
-            manpower_data.append([str(i+1), '', ''])
-    
-    return manpower_data
-
-def get_schedule_data():
-    """Get implementation schedule data"""
-    print("\n=== Section 9: Implementation Schedule ===")
-    print("(Press Enter to skip any dates)")
-    
-    activities = [
-        'Preparation of Project Report',
-        'Sanction of Grant from Government of India',
-        'NOC from Pollution Control Board',
-        'Site Development',
-        'Building up-keep',
-        'Placement of order to equipment supplier',
-        'Supply of equipments by suppliers',
-        'Installation of equipments at site',
-        'Sanction of power connection',
-        'Trial Run',
-        'Commercial Production',
-    ]
-    
-    schedule_data = [['Activities', 'Start Date', 'Completion Date']]
-    
-    for activity in activities:
-        start = get_optional_input(f"{activity} - Start Date")
-        end = get_optional_input(f"{activity} - Completion Date")
-        schedule_data.append([activity, start, end])
-    
-    return schedule_data
-
-def get_cost_data():
-    """Get project cost data"""
-    print("\n=== Section 10: Estimated Project Cost ===")
-    
-    cost_data = [
-        ['S. No.', 'Particulars', 'Amount'],
-        ['1', 'Land and Building', get_optional_input("Land and Building (Rs. in lakh)")],
-        ['2', 'Plant & Machinery including MFA,\nInstallation, Taxes/duties,\nContingencies, etc.', get_optional_input("Plant & Machinery (Rs. in lakh)")],
-        ['3', 'Preliminary & Pre-operative expenses', get_optional_input("Preliminary expenses (Rs. in lakh)")],
-        ['4', 'Margin money for Working Capital', get_optional_input("Working Capital (Rs. in lakh)")],
-        ['', 'Total', get_optional_input("Total Project Cost (Rs. in lakh)")],
-    ]
-    
-    return cost_data
-
-def get_machinery_data():
-    """Get machinery details"""
-    print("\n=== Section 10: Plant & Machinery ===")
-    num_items = input("How many machinery items to add? (Press Enter for 0): ").strip()
-    num_items = int(num_items) if num_items.isdigit() else 0
-    
-    machinery_data = [['S. No.', 'Description', 'No.', 'Amount']]
-    
-    for i in range(max(num_items, 4)):  # Minimum 4 rows
-        if i < num_items:
-            desc = get_optional_input(f"Item {i+1} Description")
-            qty = get_optional_input(f"Item {i+1} Quantity")
-            amt = get_optional_input(f"Item {i+1} Amount (Rs. lakh)")
-            machinery_data.append([str(i+1), desc, qty, amt])
-        else:
-            machinery_data.append([str(i+1), '', '', ''])
-    
-    return machinery_data
-
-def get_financing_data():
-    """Get means of financing data"""
-    print("\n=== Section 10: Proposed Means of Financing ===")
-    num_sources = input("How many financing sources to add? (Press Enter for 0): ").strip()
-    num_sources = int(num_sources) if num_sources.isdigit() else 0
-    
-    financing_data = [['S. No.', 'Particulars', 'Percentage', 'Amount']]
-    
-    for i in range(num_sources):
-        particular = get_optional_input(f"Source {i+1} Name")
-        percentage = get_optional_input(f"Source {i+1} Percentage")
-        amount = get_optional_input(f"Source {i+1} Amount")
-        financing_data.append([str(i+1), particular, percentage, amount])
-    
-    total_amt = get_optional_input("Total Amount")
-    financing_data.append(['', 'Total', '', total_amt])
-    
-    return financing_data
-
-def get_financial_data():
-    """Get financial viability data"""
-    print("\n=== Section 14: Financial Economic Viability ===")
-    print("Enter data for 5 financial years (Press Enter to skip)")
-    
-    params = [
-        'Net Block',
-        'Current Assets (incl. cash/bank balance)',
-        'Current Liabilities (incl. principal installment falling due during the year)',
-        'Long term borrowings',
-        'Capital',
-        'Reserves and Surplus',
-        'Unsecured loan',
-        'Net Worth (incl. GoI Subsidy as Quasi-equity)',
-        'Income',
-        'Gross profit',
-        'Depreciation',
-        'Profit after tax',
-        'Gross Cash Accruals',
-    ]
-    
-    financial_data = [['S. No.', 'Particulars', 'FY 1', 'FY 2', 'FY3', 'FY4', 'FY5']]
-    
-    for i, param in enumerate(params, 1):
-        row = [str(i), param]
-        for fy in range(1, 6):
-            value = get_optional_input(f"{param} - FY{fy}")
-            row.append(value)
-        financial_data.append(row)
-    
-    return financial_data
-
-def get_performance_data():
-    """Get projected performance data"""
-    print("\n=== Section 15: Projected Performance ===")
-    
-    particulars = [
-        'Units (including details of SC/ST/Women/Minorities)',
-        'Employment',
-        'Production',
-        'Exports',
-        'Import Substitution',
-        'Number of patent expected aimed',
-        'Investment',
-        'Turnover',
-        'Profit',
-        'Quality Certification',
-        'Any others (No. of ZED certified units)',
-    ]
-    
-    performance_data = [['Particulars', 'Before Intervention\nQty. / Outcome', 'After Intervention\nQty. / Outcome']]
-    
-    for particular in particulars:
-        before = get_optional_input(f"{particular} - Before")
-        after = get_optional_input(f"{particular} - After")
-        performance_data.append([particular, before, after])
-    
-    return performance_data
-
-def create_dpr_pdf(project_name, candidate_name, address):
+def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
     """
-    DPR Template PDF ni create chestundi - interactive ga data fill cheskune option tho
+    Generate DPR PDF with dynamic data filling
+    
+    Usage:
+    create_dpr_pdf(
+        "My Project",
+        "John Doe", 
+        "123 Main St",
+        Location_of_Common_Facility_Centre="Industrial Area, Phase 2",
+        Main_facilities_being_proposed="Testing Lab, Design Studio",
+        Land_and_Building="75.50",
+        Age_years=["35", "42", "38"],
+    )
     """
     
-    # Get all interactive data
-    section2_data = get_section2_data()
-    
-    spv_data, should_stop = get_spv_data(candidate_name, address)
-    if should_stop:
-        print("\n✓ Stopping data collection. Generating PDF with filled data...")
-        spv_data2 = [
-            ['(xiii)', 'Commitment letter for SPV\nUpfront contribution', ''],
-            ['(xiv)', 'Project specific A/c in schedule\nA bank', ''],
-            ['(xv)', "Clause about 'CFC may be\n utilised by SPV members as also\nothers in a cluster and \nEvidence for SPV members'\nability to utilise at least 60% of installed capacity'", ''],
-            ['(xvi)', 'Main Role of SPV', ''],
-            ['(xvii)', 'Trust building of SPV so that\nCFC may be successful', ''],
-        ]
-    else:
-        spv_data2, should_stop = get_spv_data2()
-        if should_stop:
-            print("\n✓ Stopping data collection. Generating PDF with filled data...")
-    
-    if not should_stop:
-        promoters_data, should_stop = get_promoters_data()
-        if should_stop:
-            print("\n✓ Stopping data collection. Generating PDF with filled data...")
-    else:
-        promoters_data = [
-            ['Name of the\nOffice bearers\n of the SPV', '', '', '', '', '', '', ''],
-            ['Age (years)', '', '', '', '', '', '', ''],
-            ['Educational\n Qualification', '', '', '', '', '', '', ''],
-            ['Relationship with \nthe chief promoter', '', '', '', '', '', '', ''],
-            ['Experience in what\n capacity/ industry/ years', '', '', '', '', '', '', ''],
-            ['Income Tax / Wealth \nTax Status \n(returns for 3 years\n to be furnished)', '', '', '', '', '', '', ''],
-            ['Other concerns \ninterest / in which capacity \n/financial stake', '', '', '', '', '', '', '']
-        ]
-    
-    # Set default empty data for remaining sections if stopped early
-    if should_stop:
-        impl_data = [
-            ['Description', 'Compliance'],
-            ['a. Name of Implementation Agency', ''],
-            ['b. Role of Implementing Agency (e.g. implementation and monitoring of project,\nsending regular progress reports, issuing proper UCs, )', ''],
-            ['c. Implementation Period', ''],
-            ['d. Commitment of State Government upfront contribution', ''],
-            ['e. Commitment of Loans (Working capital and/ or term loan)', ''],
-        ]
-        manpower_data = [
-            ['S. No.', 'Description of the employee', 'Number'],
-            ['1', '', ''],
-            ['2', '', ''],
-            ['3', '', ''],
-            ['4', '', ''],
-        ]
-        schedule_data = [
-            ['Activities', 'Start Date', 'Completion Date'],
-            ['Preparation of Project Report', '', ''],
-            ['Sanction of Grant from Government of India', '', ''],
-            ['NOC from Pollution Control Board', '', ''],
-            ['Site Development', '', ''],
-            ['Building up-keep', '', ''],
-            ['Placement of order to equipment supplier', '', ''],
-            ['Supply of equipments by suppliers', '', ''],
-            ['Installation of equipments at site', '', ''],
-            ['Sanction of power connection', '', ''],
-            ['Trial Run', '', ''],
-            ['Commercial Production', '', ''],
-        ]
-        cost_data = [
-            ['S. No.', 'Particulars', 'Amount'],
-            ['1', 'Land and Building', ''],
-            ['2', 'Plant & Machinery including MFA,\nInstallation, Taxes/duties,\nContingencies, etc.', ''],
-            ['3', 'Preliminary & Pre-operative expenses', ''],
-            ['4', 'Margin money for Working Capital', ''],
-            ['', 'Total', ''],
-        ]
-        machinery_data = [
-            ['S. No.', 'Description', 'No.', 'Amount'],
-            ['1', '', '', ''],
-            ['2', '', '', ''],
-            ['3', '', '', ''],
-            ['4', '', '', ''],
-        ]
-        financing_data = [
-            ['S. No.', 'Particulars', 'Percentage', 'Amount'],
-            ['', '', '', ''],
-            ['', 'Total', '', ''],
-        ]
-        financial_data = [
-            ['S. No.', 'Particulars', 'FY 1', 'FY 2', 'FY3', 'FY4', 'FY5'],
-            ['1', 'Net Block', '', '', '', '', ''],
-            ['2', 'Current Assets (incl. cash/bank balance)', '', '', '', '', ''],
-            ['3', 'Current Liabilities (incl. principal installment falling due during the year)', '', '', '', '', ''],
-            ['4', 'Long term borrowings', '', '', '', '', ''],
-            ['5', 'Capital', '', '', '', '', ''],
-            ['6', 'Reserves and Surplus', '', '', '', '', ''],
-            ['7', 'Unsecured loan', '', '', '', '', ''],
-            ['8', 'Net Worth (incl. GoI Subsidy as Quasi-equity)', '', '', '', '', ''],
-            ['9', 'Income', '', '', '', '', ''],
-            ['10', 'Gross profit', '', '', '', '', ''],
-            ['11', 'Depreciation', '', '', '', '', ''],
-            ['12', 'Profit after tax', '', '', '', '', ''],
-            ['13', 'Gross Cash Accruals', '', '', '', '', ''],
-        ]
-        performance_data = [
-            ['Particulars', 'Before Intervention\nQty. / Outcome', 'After Intervention\nQty. / Outcome'],
-            ['Units (including details of SC/ST/Women/Minorities)', '', ''],
-            ['Employment', '', ''],
-            ['Production', '', ''],
-            ['Exports', '', ''],
-            ['Import Substitution', '', ''],
-            ['Number of patent expected aimed', '', ''],
-            ['Investment', '', ''],
-            ['Turnover', '', ''],
-            ['Profit', '', ''],
-            ['Quality Certification', '', ''],
-            ['Any others (No. of ZED certified units)', '', ''],
-        ]
-    else:
-        impl_data = get_implementation_data()
-        manpower_data = get_manpower_data()
-        schedule_data = get_schedule_data()
-        cost_data = get_cost_data()
-        machinery_data = get_machinery_data()
-        financing_data = get_financing_data()
-        financial_data = get_financial_data()
-        performance_data = get_performance_data()
+    # Helper function to find and fill table values
+    def fill_table_data(table_data, kwargs):
+        """Fill table with values from kwargs based on key matching"""
+        filled_keys = set()  # Track which keys have been used
+        
+        for row_idx, row in enumerate(table_data):
+            for col_idx, cell in enumerate(row):
+                if isinstance(cell, str) and cell.strip():
+                    # Clean the cell text for matching
+                    cell_key = cell.strip().replace('\n', ' ').replace('  ', ' ')
+                    
+                    best_match = None
+                    best_match_score = 0
+                    best_value = None
+                    
+                    # Check all kwargs for matching keys
+                    for key, value in kwargs.items():
+                        if key in filled_keys:
+                            continue  # Skip already used keys
+                        
+                        # Create searchable version of key
+                        search_key = key.replace('_', ' ').lower().strip()
+                        cell_lower = cell_key.lower().strip()
+                        
+                        # Remove common prefixes for better matching
+                        cell_cleaned = cell_lower
+                        for prefix in ['a. ', 'b. ', 'c. ', 'd. ', 'e. ', 'f. ', 'g. ', 'h. ', 'i. ', 'j. ', '(i)', '(ii)', '(iii)', '(iv)', '(v)', '(vi)', '(vii)', '(viii)', '(ix)', '(x)', '(xi)', '(xii)']:
+                            if cell_cleaned.startswith(prefix):
+                                cell_cleaned = cell_cleaned[len(prefix):].strip()
+                                break
+                        
+                        # Calculate match score (higher = better match)
+                        match_score = 0
+                        
+                        # Exact match with cleaned cell gets highest score
+                        if search_key == cell_cleaned:
+                            match_score = 10000
+                        # Exact match with original cell
+                        elif search_key == cell_lower:
+                            match_score = 9000
+                        # Cell cleaned contains the full search key
+                        elif search_key in cell_cleaned and len(search_key) > 5:
+                            # Only if search key is significant portion of cell
+                            ratio = len(search_key) / len(cell_cleaned)
+                            if ratio > 0.5:  # Search key is at least 50% of cell text
+                                match_score = 5000 + int(ratio * 1000)
+                        # All words from search key present in cell
+                        else:
+                            search_words = set(search_key.split())
+                            cell_words = set(cell_cleaned.split())
+                            
+                            # Must have at least 2 words to consider word matching
+                            if len(search_words) >= 2:
+                                common_words = search_words.intersection(cell_words)
+                                # All search words must be present
+                                if len(common_words) == len(search_words):
+                                    match_score = 3000 + len(common_words) * 100
+                                # Most search words present (at least 70%)
+                                elif len(common_words) >= len(search_words) * 0.7:
+                                    match_score = 1000 + len(common_words) * 50
+                        
+                        # Update best match if this is better
+                        if match_score > best_match_score:
+                            best_match_score = match_score
+                            best_match = key
+                            best_value = value
+                    
+                    # If we found a good match (score > 1000), fill it
+                    if best_match and best_match_score > 1000:
+                        # Handle list values (multiple columns)
+                        if isinstance(best_value, list):
+                            # Fill multiple columns with list values
+                            for i, val in enumerate(best_value):
+                                if col_idx + 1 + i < len(row):
+                                    table_data[row_idx][col_idx + 1 + i] = str(val)
+                        else:
+                            # Fill next column with single value
+                            if col_idx + 1 < len(row):
+                                table_data[row_idx][col_idx + 1] = str(best_value)
+                        
+                        # Mark this key as used
+                        filled_keys.add(best_match)
+                        break  # Move to next row after filling
+        
+        return table_data
     
     # PDF filename with project name and timestamp
     downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
-    safe_project_name = project_name.replace(" ", "_")
+    
+    # Remove invalid Windows filename characters
+    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+    safe_project_name = project_name
+    for char in invalid_chars:
+        safe_project_name = safe_project_name.replace(char, '')
+    
+    # Replace spaces with underscores and limit length
+    safe_project_name = safe_project_name.replace(" ", "_")[:50]
+    
     filename = os.path.join(downloads_folder, f"DPR_{safe_project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
     
     # PDF document setup
@@ -537,6 +193,16 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("2. Brief particulars of the proposal", heading_style))
     story.append(Spacer(1, 2))
     
+    # Section 2 Table
+    section2_data = [
+        ['Name of applicant,\ncontact details, etc', 'As CFC Registered address / administrative address may be different\nfrom CFC facilities address, the same may be provided'],
+        ['Location of Common\nFacility Centre', 'Address where facilities are proposed may be provided'],
+        ['Main facilities being\nproposed', 'Details of facilities to be provided']
+    ]
+    
+    # Fill with kwargs data
+    section2_data = fill_table_data(section2_data, kwargs)
+    
     section2_table = Table(section2_data, colWidths=[2.3*inch, 4.5*inch])
     section2_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
@@ -568,6 +234,29 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("3. Information about SPV", heading_style))
     story.append(Spacer(1, 2))
     
+    # Combine candidate name and address
+    name_address = f"{candidate_name}, {address}"
+    
+    # SPV Information Table
+    spv_data = [
+        ['S. No.', 'Description', 'Details/ Compliance'],
+        ['(i)', 'Name and address', name_address],
+        ['(ii)', 'Registration details of SPV\n(including registration as Section\n8 company under the Companies\nAct 2013)', ''],
+        ['(iii)', 'Names of the State Govt and\nMSME officials in SPV', ''],
+        ['(iv)', 'Date of formation of the\ncompany', ''],
+        ['(v)', 'Date of commencement of\nbusiness', ''],
+        ['(vi)', 'Number of MSE Member Units', ''],
+        ['(vii)', 'Bye laws or MoA and AoA\nsubmitted', ''],
+        ['(viii)', 'Main objectives of the SPV', ''],
+        ['(ix)', 'SPV to have a character of\ninclusiveness wherein provision\nfor enrolling new members to\nenable prospective entrepreneurs\nin the cluster to utilise the\nfacility', ''],
+        ['(x)', "Clause about 'Profits/surplus\n to be ploughed back\n to CFC' included or not", ''],
+        ['(xi)', 'Authorized share capital', ''],
+        ['(xii)', 'Shareholding Pattern\n(Annexure-3 to be filled in)', ''],
+    ]
+    
+    # Fill with kwargs data
+    spv_data = fill_table_data(spv_data, kwargs)
+    
     spv_table = Table(spv_data, colWidths=[0.5*inch, 2.8*inch, 3.5*inch])
     spv_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -587,6 +276,16 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Spacer(1, 4))
     
     # Continue SPV table
+    spv_data2 = [
+        ['(xiii)', 'Commitment letter for SPV\nUpfront contribution', ''],
+        ['(xiv)', 'Project specific A/c in schedule\nA bank', ''],
+        ['(xv)', "Clause about 'CFC may be\n utilised by SPV members as also\nothers in a cluster and \nEvidence for SPV members'\nability to utilise at least 60% of installed capacity'", ''],
+        ['(xvi)', 'Main Role of SPV', ''],
+        ['(xvii)', 'Trust building of SPV so that\nCFC may be successful', ''],
+    ]
+    
+    spv_data2 = fill_table_data(spv_data2, kwargs)
+    
     spv_table2 = Table(spv_data2, colWidths=[0.5*inch, 2.8*inch, 3.5*inch])
     spv_table2.setStyle(TableStyle([
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
@@ -609,6 +308,19 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("(ii) The details of the promoters are as under:", normal_style))
     story.append(Spacer(1, 4))
     
+    # Promoters Table
+    promoters_data = [
+        ['Name of the\nOffice bearers\n of the SPV', '', '', '', '', '', '', ''],
+        ['Age (years)', '', '', '', '', '', '', ''],
+        ['Educational\n Qualification', '', '', '', '', '', '', ''],
+        ['Relationship with \nthe chief promoter', '', '', '', '', '', '', ''],
+        ['Experience in what\n capacity/ industry/ years', '', '', '', '', '', '', ''],
+        ['Income Tax / Wealth \nTax Status \n(returns for 3 years\n to be furnished)', '', '', '', '', '', '', ''],
+        ['Other concerns \ninterest / in which capacity \n/financial stake', '', '', '', '', '', '', '']
+    ]
+    
+    promoters_data = fill_table_data(promoters_data, kwargs)
+
     promoters_table = Table(promoters_data, colWidths=[1.2*inch, 0.4*inch, 0.8*inch, 0.8*inch, 1.0*inch, 1.1*inch, 0.6*inch, 0.5*inch])
     promoters_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -641,6 +353,7 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("5. Eligibility as per guidelines of MSE-CDP", heading_style))
     story.append(Spacer(1, 4))
     
+    # Eligibility data
     eligibility_data = [
         ['S.\nNo.', 'Eligibility Criteria', 'Comments'],
         ['1.', Paragraph('The GoI grant will be restricted to 60% / 70% / 80% of the cost of Project of maximum Rs.30.00 crore as per the Scheme guidelines.', normal_style), ''],
@@ -678,6 +391,17 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("6. Implementing Arrangements", heading_style))
     story.append(Spacer(1, 2))
     
+    impl_data = [
+        ['Description', 'Compliance'],
+        ['a. Name of Implementation Agency', ''],
+        ['b. Role of Implementing Agency (e.g. implementation and monitoring of project,\nsending regular progress reports, issuing proper UCs, )', ''],
+        ['c. Implementation Period', ''],
+        ['d. Commitment of State Government upfront contribution', ''],
+        ['e. Commitment of Loans (Working capital and/ or term loan)', ''],
+    ]
+    
+    impl_data = fill_table_data(impl_data, kwargs)
+    
     impl_table = Table(impl_data, colWidths=[4.6*inch, 2.2*inch])
     impl_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -714,6 +438,16 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("The details of the manpower are as under:", normal_style))
     story.append(Spacer(1, 2))
     
+    manpower_data = [
+        ['S. No.', 'Description of the employee', 'Number'],
+        ['1', '', ''],
+        ['2', '', ''],
+        ['3', '', ''],
+        ['4', '', ''],
+    ]
+    
+    manpower_data = fill_table_data(manpower_data, kwargs)
+    
     manpower_table = Table(manpower_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
     manpower_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -733,6 +467,23 @@ def create_dpr_pdf(project_name, candidate_name, address):
     # Section 9
     story.append(Paragraph("9. Implementation Schedule:", heading_style))
     story.append(Spacer(1, 2))
+    
+    schedule_data = [
+        ['Activities', 'Start Date', 'Completion Date'],
+        ['Preparation of Project Report', '', ''],
+        ['Sanction of Grant from Government of India', '', ''],
+        ['NOC from Pollution Control Board', '', ''],
+        ['Site Development', '', ''],
+        ['Building up-keep', '', ''],
+        ['Placement of order to equipment supplier', '', ''],
+        ['Supply of equipments by suppliers', '', ''],
+        ['Installation of equipments at site', '', ''],
+        ['Sanction of power connection', '', ''],
+        ['Trial Run', '', ''],
+        ['Commercial Production', '', ''],
+    ]
+    
+    schedule_data = fill_table_data(schedule_data, kwargs)
     
     schedule_table = Table(schedule_data, colWidths=[3.2*inch, 1.8*inch, 1.8*inch])
     schedule_table.setStyle(TableStyle([
@@ -756,6 +507,17 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("10. Project components:", heading_style))
     story.append(Paragraph("(i) Estimated Project Cost (Rs. in lakh):", subheading_style))
     story.append(Spacer(1, 2))
+    
+    cost_data = [
+        ['S. No.', 'Particulars', 'Amount'],
+        ['1', 'Land and Building', ''],
+        ['2', 'Plant & Machinery including MFA,\nInstallation, Taxes/duties,\nContingencies, etc.', ''],
+        ['3', 'Preliminary & Pre-operative expenses', ''],
+        ['4', 'Margin money for Working Capital', ''],
+        ['', 'Total', ''],
+    ]
+    
+    cost_data = fill_table_data(cost_data, kwargs)
     
     cost_table = Table(cost_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
     cost_table.setStyle(TableStyle([
@@ -782,6 +544,16 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("(iii) Plant & Machinery:", normal_style))
     story.append(Paragraph("(Rs. in lakh)", normal_style))
     story.append(Spacer(1, 2))
+    
+    machinery_data = [
+        ['S. No.', 'Description', 'No.', 'Amount'],
+        ['1', '', '', ''],
+        ['2', '', '', ''],
+        ['3', '', '', ''],
+        ['4', '', '', ''],
+    ]
+    
+    machinery_data = fill_table_data(machinery_data, kwargs)
     
     machinery_table = Table(machinery_data, colWidths=[0.7*inch, 3.4*inch, 1*inch, 1.7*inch])
     machinery_table.setStyle(TableStyle([
@@ -810,6 +582,14 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("(x) Proposed Means of Financing:", normal_style))
     story.append(Paragraph("(Rs. in lakh)", normal_style))
     story.append(Spacer(1, 2))
+    
+    financing_data = [
+        ['S. No.', 'Particulars', 'Percentage', 'Amount'],
+        ['', '', '', ''],
+        ['', 'Total', '', ''],
+    ]
+    
+    financing_data = fill_table_data(financing_data, kwargs)
     
     financing_table = Table(financing_data, colWidths=[0.7*inch, 3.2*inch, 1.2*inch, 1.7*inch])
     financing_table.setStyle(TableStyle([
@@ -849,6 +629,25 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Paragraph("                           (Rs. in lakh)", normal_style))
     story.append(Spacer(1, 2))
     
+    financial_data = [
+        ['S. No.', 'Particulars', 'FY 1', 'FY 2', 'FY3', 'FY4', 'FY5'],
+        ['1', 'Net Block', '', '', '', '', ''],
+        ['2', 'Current Assets (incl.\ncash/bank balance)', '', '', '', '', ''],
+        ['3', 'Current Liabilities (incl.\nprincipal installment falling\ndue during the year)', '', '', '', '', ''],
+        ['4', 'Long term borrowings', '', '', '', '', ''],
+        ['5', 'Capital', '', '', '', '', ''],
+        ['6', 'Reserves and Surplus', '', '', '', '', ''],
+        ['7', 'Unsecured loan', '', '', '', '', ''],
+        ['8', 'Net Worth (incl. GoI Subsidy\nas Quasi-equity)', '', '', '', '', ''],
+        ['9', 'Income', '', '', '', '', ''],
+        ['10', 'Gross profit', '', '', '', '', ''],
+        ['11', 'Depreciation', '', '', '', '', ''],
+        ['12', 'Profit after tax', '', '', '', '', ''],
+        ['13', 'Gross Cash Accruals', '', '', '', '', ''],
+    ]
+    
+    financial_data = fill_table_data(financial_data, kwargs)
+    
     financial_table = Table(financial_data, colWidths=[0.4*inch, 2.4*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.7*inch])
     financial_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -867,11 +666,28 @@ def create_dpr_pdf(project_name, candidate_name, address):
     story.append(Spacer(1, 3))
     
     story.append(Paragraph("The projected revenue of SPV is based upon the following major assumptions:", normal_style))
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 4))
     
     # Section 15
     story.append(Paragraph("15. Projected performance of the cluster after proposed intervention (in terms of production, domestic sales / exports and direct, indirect employment, etc.)", heading_style))
     story.append(Spacer(1, 2))
+    
+    performance_data = [
+        ['Particulars', 'Before Intervention\nQty. / Outcome', 'After Intervention\nQty. / Outcome'],
+        ['Units (including\ndetails of\nSC/ST/Women\n/Minorities)', '', ''],
+        ['Employment', '', ''],
+        ['Production', '', ''],
+        ['Exports', '', ''],
+        ['Import Substitution', '', ''],
+        ['Number of patent\nexpected aimed', '', ''],
+        ['Investment', '', ''],
+        ['Turnover', '', ''],
+        ['Profit', '', ''],
+        ['Quality\nCertification', '', ''],
+        ['Any others (No. of\nZED certified\nunits)', '', ''],
+    ]
+    
+    performance_data = fill_table_data(performance_data, kwargs)
     
     performance_table = Table(performance_data, colWidths=[2.3*inch, 2.3*inch, 2.3*inch])
     performance_table.setStyle(TableStyle([
@@ -969,36 +785,73 @@ def create_dpr_pdf(project_name, candidate_name, address):
 if __name__ == "__main__":
     try:
         print("\n" + "="*60)
-        print("  DPR TEMPLATE PDF GENERATOR - INTERACTIVE MODE")
+        print("  DPR DYNAMIC PDF GENERATOR")
         print("="*60)
         
-        # Get basic inputs first
-        print("\n=== Basic Project Information ===\n")
+        # Get basic inputs
+        print("\n=== Basic Information ===\n")
         
         project_name = input("Project Name: ").strip()
         candidate_name = input("Candidate/SPV Name: ").strip()
         address = input("Address: ").strip()
         
-        # Validate inputs
+        # Validate basic inputs
         if not project_name or not candidate_name or not address:
-            print("\n✗ Error: Project Name, Candidate Name, and Address are required!")
+            print("\n✗ Error: Basic fields are required!")
             exit(1)
         
-        print("\n✓ Basic information captured!")
+        print("\n✓ Basic input captured!")
         print("\n" + "="*60)
-        print("Now you'll be asked to fill table data.")
-        print("Press Enter to skip any field.")
-        print("Type 'done' at ANY point to stop and generate PDF immediately.")
+        print("  DYNAMIC DATA INPUT")
         print("="*60)
+        print("\nEnter key-value pairs to fill table fields.")
+        print("Format: key=value")
+        print("For multiple values: key=[value1,value2,value3]")
+        print("Type 'done' when finished.\n")
+        print("Examples:")
+        print("  Land_and_Building=50.00")
+        print("  Age_years=[35,42,38]")
+        print("  Registration_details_of_SPV=Registered under Section 8\n")
         
-        # Generate PDF with interactive data collection
-        pdf_file = create_dpr_pdf(project_name, candidate_name, address)
+        kwargs = {}
+        
+        while True:
+            user_input = input("Enter data (or 'done'): ").strip()
+            
+            if user_input.lower() == 'done':
+                break
+            
+            if '=' not in user_input:
+                print("✗ Invalid format. Use: key=value")
+                continue
+            
+            key, value = user_input.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            # Check if value is a list
+            if value.startswith('[') and value.endswith(']'):
+                # Parse list
+                value = value[1:-1]  # Remove brackets
+                value_list = [v.strip() for v in value.split(',')]
+                kwargs[key] = value_list
+                print(f"✓ Added: {key} = {value_list}")
+            else:
+                kwargs[key] = value
+                print(f"✓ Added: {key} = {value}")
+        
+        print(f"\n✓ Total {len(kwargs)} data fields captured!")
+        print("\nGenerating PDF...\n")
+        
+        # Generate PDF
+        pdf_file = create_dpr_pdf(project_name, candidate_name, address, **kwargs)
         
         print("\n" + "="*60)
         print("  ✓✓✓ PDF CREATION SUCCESSFUL!")
-        print("="*60 + "\n")
-    except KeyboardInterrupt:
-        print("\n\n✗ Process interrupted by user.")
+        print("="*60)
+        print(f"\nData filled: {len(kwargs)} fields")
+        print(f"Open the PDF to view your data!\n")
+        
     except Exception as e:
         print(f"\n✗ Error occurred: {e}")
         import traceback
