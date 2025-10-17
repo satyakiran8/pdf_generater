@@ -56,6 +56,10 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         # Remove trailing colons
         text_clean = text_clean.rstrip(':').strip()
         
+        # Normalize spaces - remove extra spaces and handle missing spaces
+        import re
+        text_normalized = re.sub(r'\s+', ' ', text_clean)
+        
         # Check for exact match with any key
         for key, value in kwargs.items():
             if key in used_keys:
@@ -65,15 +69,41 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
             # Also remove trailing colons from key
             key_clean = key_clean.rstrip(':').strip()
             
-            # Exact match required
-            if text_clean == key_clean:
+            # Normalize key spaces
+            key_normalized = re.sub(r'\s+', ' ', key_clean)
+            
+            # Exact match with normalized spaces
+            if text_normalized == key_normalized:
+                return key, value
+            
+            # Also try matching without spaces (for typos like "Rs.30.00crore")
+            text_no_space = text_normalized.replace(' ', '')
+            key_no_space = key_normalized.replace(' ', '')
+            if len(text_no_space) > 20 and text_no_space == key_no_space:
                 return key, value
         
         return None, None
     
     # Helper function to find and fill table values
-    def fill_table_data(table_data, kwargs):
-        """Fill table with values from kwargs based on key matching"""
+    def fill_table_data(table_data, kwargs, table_context=""):
+        """Fill table with values from kwargs based on key matching
+        
+        table_context: helps distinguish between multiple tables with same field names
+        """
+        
+        # List of protected heading keywords that should not be filled in tables
+        protected_headings = [
+            'economics of the project',
+            'technical aspects',
+            'financial economic viability',
+            'commercial viability',
+            'risk mitigation framework',
+            'swot analysis',
+            'conclusion',
+            'management and shareholding',
+            'implementing arrangements',
+            'eligibility as per guidelines'
+        ]
         
         for row_idx, row in enumerate(table_data):
             for col_idx, cell in enumerate(row):
@@ -95,15 +125,39 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
                     # First check for exact text match (for standalone text in tables)
                     exact_key, exact_value = find_text_match(cell_key, kwargs)
                     if exact_key and exact_value:
-                        # Found exact match - fill next column
-                        if isinstance(exact_value, list):
-                            for i, val in enumerate(exact_value):
-                                if col_idx + 1 + i < len(row):
-                                    table_data[row_idx][col_idx + 1 + i] = str(val)
-                        else:
-                            if col_idx + 1 < len(row):
-                                table_data[row_idx][col_idx + 1] = str(exact_value)
-                        used_keys.add(exact_key)
+                        # Check if this is a protected heading
+                        key_lower = exact_key.lower().strip()
+                        is_protected = any(protected in key_lower for protected in protected_headings)
+                        
+                        if not is_protected:
+                            # Special handling for "Total" field based on value type and table context
+                            if cell_key.strip().lower() == 'total' and exact_key.lower() == 'total':
+                                # If value is a list, it's for "Proposed Means of Financing" table
+                                if isinstance(exact_value, list) and table_context == "financing":
+                                    for i, val in enumerate(exact_value):
+                                        if col_idx + 1 + i < len(row):
+                                            table_data[row_idx][col_idx + 1 + i] = str(val)
+                                    used_keys.add(exact_key)
+                                    continue
+                                # If value is NOT a list, it's for "Estimated Project Cost" table
+                                elif not isinstance(exact_value, list) and table_context == "project_cost":
+                                    if col_idx + 1 < len(row):
+                                        table_data[row_idx][col_idx + 1] = str(exact_value)
+                                    used_keys.add(exact_key)
+                                    continue
+                                # If context doesn't match, skip this match
+                                else:
+                                    continue
+                            
+                            # Found exact match - fill next column (for other fields)
+                            if isinstance(exact_value, list):
+                                for i, val in enumerate(exact_value):
+                                    if col_idx + 1 + i < len(row):
+                                        table_data[row_idx][col_idx + 1 + i] = str(val)
+                            else:
+                                if col_idx + 1 < len(row):
+                                    table_data[row_idx][col_idx + 1] = str(exact_value)
+                            used_keys.add(exact_key)
                         continue
                     
                     # If no exact match, try fuzzy matching (existing logic)
@@ -111,6 +165,12 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
                     for key, value in kwargs.items():
                         if key in used_keys:
                             continue  # Skip already used keys
+                        
+                        # Check if this is a protected heading
+                        key_lower = key.lower().strip()
+                        is_protected = any(protected in key_lower for protected in protected_headings)
+                        if is_protected:
+                            continue  # Skip protected headings in table matching
                         
                         # Create searchable version of key
                         search_key = key.replace('_', ' ').lower().strip()
@@ -322,8 +382,33 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
     add_text("2.1. Introduction: brief about", subheading_style)
     add_text("2.1.1. General scenario of industrial growth/ cluster development in the state")
     add_text("2.1.2. Sector for which CFC is proposed to be set up")
-    add_text("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages")
-    add_text("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):")
+    
+    # Special handling for combined text - try both with and without prefix
+    combined_texts = [
+        "2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkagesBasic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):",
+        "Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkagesBasic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):"
+    ]
+    
+    matched_key = None
+    value = None
+    for combined_text in combined_texts:
+        matched_key, value = find_text_match(combined_text, kwargs)
+        if matched_key and value:
+            break
+    
+    if matched_key and value:
+        story.append(Paragraph("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages", normal_style))
+        story.append(Paragraph("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):", normal_style))
+        if isinstance(value, list):
+            value_text = ", ".join(str(v) for v in value)
+        else:
+            value_text = str(value)
+        story.append(Paragraph(f"→ {value_text}", value_style))
+        used_keys.add(matched_key)
+    else:
+        add_text("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages")
+        add_text("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):")
+    
     add_text("2.1.4. How the proposed CFC is relevant to the growth of the concerned cluster/ sector")
     story.append(Spacer(1, 4))
     
@@ -449,7 +534,7 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
     add_text("5. Eligibility as per guidelines of MSE-CDP", heading_style)
     story.append(Spacer(1, 4))
     
-    # Eligibility data
+    # Eligibility data - DO NOT auto-fill this table, only manual override
     eligibility_data = [
         ['S.\nNo.', 'Eligibility Criteria', 'Comments'],
         ['1.', Paragraph('The GoI grant will be restricted to 60% / 70% / 80% of the cost of Project of maximum Rs.30.00 crore as per the Scheme guidelines.', normal_style), ''],
@@ -463,8 +548,51 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['9.', Paragraph('Evidence should be furnished with regard to SPV members ability to utilize at least 60% of installed capacity.', normal_style), ''],
     ]
     
-    # Fill eligibility table with kwargs
-    eligibility_data = fill_table_data(eligibility_data, kwargs)
+    # Manual filling for specific eligibility comments if provided
+    for i in range(1, 10):
+        key_name = f"Eligibility_Criteria_{i}_Comment"
+        if key_name in kwargs:
+            eligibility_data[i][2] = str(kwargs[key_name])
+            used_keys.add(key_name)
+    
+    # Alternative: Check for paragraph text match for eligibility
+    for i in range(1, 10):
+        para_text = eligibility_data[i][1].text if hasattr(eligibility_data[i][1], 'text') else ''
+        for key, value in kwargs.items():
+            if key in used_keys:
+                continue
+            # Check if the key matches the paragraph text
+            key_clean = key.lower().strip().replace('_', ' ')
+            para_clean = para_text.lower().strip()
+            
+            # Normalize spaces for better matching
+            import re
+            key_normalized = re.sub(r'\s+', ' ', key_clean)
+            para_normalized = re.sub(r'\s+', ' ', para_clean)
+            
+            # Try exact match
+            if key_normalized == para_normalized:
+                eligibility_data[i][2] = str(value)
+                used_keys.add(key)
+                break
+            
+            # Try without spaces for typos
+            key_no_space = key_normalized.replace(' ', '')
+            para_no_space = para_normalized.replace(' ', '')
+            if len(key_no_space) > 30 and key_no_space == para_no_space:
+                eligibility_data[i][2] = str(value)
+                used_keys.add(key)
+                break
+            
+            # Try if key contains significant part of paragraph (80%+ match)
+            if len(key_normalized) > 50 and len(para_normalized) > 50:
+                # Check character overlap
+                if key_no_space in para_no_space or para_no_space in key_no_space:
+                    overlap_ratio = min(len(key_no_space), len(para_no_space)) / max(len(key_no_space), len(para_no_space))
+                    if overlap_ratio > 0.8:
+                        eligibility_data[i][2] = str(value)
+                        used_keys.add(key)
+                        break
     
     eligibility_table = Table(eligibility_data, colWidths=[0.4*inch, 5.5*inch, 0.9*inch])
     eligibility_table.setStyle(TableStyle([
@@ -616,7 +744,7 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', ''],
     ]
     
-    cost_data = fill_table_data(cost_data, kwargs)
+    cost_data = fill_table_data(cost_data, kwargs, table_context="project_cost")
     
     cost_table = Table(cost_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
     cost_table.setStyle(TableStyle([
@@ -688,7 +816,7 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', '', ''],
     ]
     
-    financing_data = fill_table_data(financing_data, kwargs)
+    financing_data = fill_table_data(financing_data, kwargs, table_context="financing")
     
     financing_table = Table(financing_data, colWidths=[0.7*inch, 3.2*inch, 1.2*inch, 1.7*inch])
     financing_table.setStyle(TableStyle([
@@ -931,7 +1059,8 @@ if __name__ == "__main__":
         print("  Land_and_Building=50.00")
         print("  Age_years=[35,42,38]")
         print("  Profit=50 Lakhs")
-        print("  Technology=AI-based automation\n")
+        print("  Total=500 (for Project Cost table)")
+        print("  Total=[10,20] (for Financing table)\n")
         
         kwargs = {}
         
