@@ -19,11 +19,79 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         Location_of_Common_Facility_Centre="Industrial Area, Phase 2",
         Profit="50 Lakhs",
         Age_years=["35", "42", "38"],
+        Total=500,  # For BOTH tables! Single value for Project Cost
+        Total=[60, 300, 140],  # List for Financing table
+        Description_of_employee_1="Manager",
+        Number_of_employee_1="2",
+        Preliminary_expenses="25.50"  # Will match "Preliminary & Pre-operative expenses"
     )
     """
     
     # Track which keys have been used
     used_keys = set()
+    
+    # ENHANCED: Add fuzzy matching aliases for common mismatches
+    # NOTE: These are ONLY for table matching, not text sections!
+    field_aliases = {
+        'land and building': ['land and building'],
+        'plant & machinery': ['plant & machinery including mfa'],
+        'plant and machinery': ['plant & machinery including mfa'],
+        # For table-specific full names (allow these even if text sections exist)
+        'preliminary & pre-operative expenses': ['preliminary & pre-operative expenses', 'preliminary and pre-operative expenses'],
+        'preliminary and pre-operative expenses': ['preliminary & pre-operative expenses'],
+    }
+    
+    def normalize_text(text):
+        """Normalize text for better matching"""
+        import re
+        if not isinstance(text, str):
+            return ""
+        # Convert to lowercase
+        text = text.lower().strip()
+        # Remove multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        # Remove common prefixes
+        prefixes = ['(i)', '(ii)', '(iii)', '(iv)', '(v)', '(vi)', '(vii)', '(viii)', 
+                   '(ix)', '(x)', '(xi)', '(xii)', '(xiii)', '(xiv)', '(xv)',
+                   'a.', 'b.', 'c.', 'd.', 'e.', 'f.', 'g.', 'h.', 'i.', 'j.',
+                   '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.']
+        for prefix in prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        # Remove trailing colons
+        text = text.rstrip(':').strip()
+        return text
+    
+    def check_alias_match(user_key, table_text):
+        """Check if user key matches table text via aliases"""
+        user_normalized = normalize_text(user_key)
+        table_normalized = normalize_text(table_text)
+        
+        # Direct match
+        if user_normalized == table_normalized:
+            return True
+        
+        # Check aliases
+        if user_normalized in field_aliases:
+            for alias in field_aliases[user_normalized]:
+                if normalize_text(alias) == table_normalized:
+                    return True
+        
+        # Reverse check - if table text is in aliases
+        if table_normalized in field_aliases:
+            for alias in field_aliases[table_normalized]:
+                if normalize_text(alias) == user_normalized:
+                    return True
+        
+        # Partial match - user key is significant part of table text
+        if len(user_normalized) > 5 and user_normalized in table_normalized:
+            # Check if it's at least 60% of the table text
+            ratio = len(user_normalized) / len(table_normalized)
+            if ratio > 0.6:
+                return True
+        
+        return False
     
     # Helper function to check if text matches a key exactly
     def find_text_match(text, kwargs):
@@ -35,50 +103,26 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         if not isinstance(text, str):
             return None, None
             
-        text_clean = text.strip().lower()
-        
-        # Remove common prefixes/suffixes and section numbers
-        prefixes_to_remove = [
-            '(i) ', '(ii) ', '(iii) ', '(iv) ', '(v) ', '(vi) ', 
-            '(vii) ', '(viii) ', '(ix) ', '(x) ', '(xi) ', '(xii) ', 
-            '(xiii) ', '(xiv) ', '(xv) ', '(xvi) ', '(xvii) ', '(xviii) ',
-            'a. ', 'b. ', 'c. ', 'd. ', 'e. ', 'f. ', 'g. ', 'h. ', 'i. ', 'j. ',
-            '1. ', '2. ', '3. ', '4. ', '5. ', '6. ', '7. ', '8. ', '9. ',
-            '10. ', '11. ', '12. ', '13. ', '14. ', '15. ', '16. ', '17. ', '18. ', '19. ', '20. ', '21. ',
-            '(a) ', '(b) ', '(c) ', '(d) ', '(e) ', '(f) ', '(g) ', '(h) '
-        ]
-        
-        for prefix in prefixes_to_remove:
-            if text_clean.startswith(prefix.lower()):
-                text_clean = text_clean[len(prefix):].strip()
-                break
-        
-        # Remove trailing colons
-        text_clean = text_clean.rstrip(':').strip()
-        
-        # Normalize spaces - remove extra spaces and handle missing spaces
-        import re
-        text_normalized = re.sub(r'\s+', ' ', text_clean)
+        text_clean = normalize_text(text)
         
         # Check for exact match with any key
         for key, value in kwargs.items():
             if key in used_keys:
                 continue
                 
-            key_clean = key.replace('_', ' ').lower().strip()
-            # Also remove trailing colons from key
-            key_clean = key_clean.rstrip(':').strip()
-            
-            # Normalize key spaces
-            key_normalized = re.sub(r'\s+', ' ', key_clean)
+            key_clean = normalize_text(key.replace('_', ' '))
             
             # Exact match with normalized spaces
-            if text_normalized == key_normalized:
+            if text_clean == key_clean:
+                return key, value
+            
+            # Check alias match
+            if check_alias_match(key, text):
                 return key, value
             
             # Also try matching without spaces (for typos like "Rs.30.00crore")
-            text_no_space = text_normalized.replace(' ', '')
-            key_no_space = key_normalized.replace(' ', '')
+            text_no_space = text_clean.replace(' ', '')
+            key_no_space = key_clean.replace(' ', '')
             if len(text_no_space) > 20 and text_no_space == key_no_space:
                 return key, value
         
@@ -102,7 +146,17 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
             'conclusion',
             'management and shareholding',
             'implementing arrangements',
-            'eligibility as per guidelines'
+            'eligibility as per guidelines',
+            # CRITICAL: Protect text section keywords from table matching
+            'preliminary expenses',
+            'pre-operative expenses',
+            'preoperative expenses',
+            'misc fixed assets',
+            'misc. fixed assets',
+            'miscellaneous fixed assets',
+            'contingency provisions',
+            'contingency',
+            'margin money for working capital',
         ]
         
         for row_idx, row in enumerate(table_data):
@@ -125,29 +179,35 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
                     # First check for exact text match (for standalone text in tables)
                     exact_key, exact_value = find_text_match(cell_key, kwargs)
                     if exact_key and exact_value:
-                        # Check if this is a protected heading
-                        key_lower = exact_key.lower().strip()
-                        is_protected = any(protected in key_lower for protected in protected_headings)
+                        # Check if this is a protected heading (text section keyword)
+                        key_normalized = normalize_text(exact_key.replace('_', ' '))
+                        cell_normalized = normalize_text(cell_key)
                         
-                        if not is_protected:
-                            # Special handling for "Total" field based on value type and table context
+                        # SMART PROTECTION: Only protect if user key is EXACTLY a text section keyword
+                        # Don't protect if user is targeting the full table text
+                        exact_text_section_keywords = [
+                            'preliminary expenses',
+                            'pre-operative expenses',
+                            'preoperative expenses',
+                            'misc fixed assets',
+                            'misc. fixed assets',
+                            'miscellaneous fixed assets',
+                            'contingency provisions',
+                            'contingency',
+                        ]
+                        
+                        # Check if user's key is exactly a text section keyword (not table variant)
+                        is_exact_text_keyword = any(normalize_text(keyword) == key_normalized for keyword in exact_text_section_keywords)
+                        
+                        # Allow table filling if:
+                        # 1. User key is NOT exactly a text keyword, OR
+                        # 2. Cell text is longer/more specific than simple keyword (table variant)
+                        allow_table_fill = not is_exact_text_keyword or len(cell_normalized) > len(key_normalized) + 10
+                        
+                        if allow_table_fill:
+                            # Special handling for "Total" field - skip it here, handled in main code
                             if cell_key.strip().lower() == 'total' and exact_key.lower() == 'total':
-                                # If value is a list, it's for "Proposed Means of Financing" table
-                                if isinstance(exact_value, list) and table_context == "financing":
-                                    for i, val in enumerate(exact_value):
-                                        if col_idx + 1 + i < len(row):
-                                            table_data[row_idx][col_idx + 1 + i] = str(val)
-                                    used_keys.add(exact_key)
-                                    continue
-                                # If value is NOT a list, it's for "Estimated Project Cost" table
-                                elif not isinstance(exact_value, list) and table_context == "project_cost":
-                                    if col_idx + 1 < len(row):
-                                        table_data[row_idx][col_idx + 1] = str(exact_value)
-                                    used_keys.add(exact_key)
-                                    continue
-                                # If context doesn't match, skip this match
-                                else:
-                                    continue
+                                continue
                             
                             # Found exact match - fill next column (for other fields)
                             if isinstance(exact_value, list):
@@ -160,48 +220,74 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
                             used_keys.add(exact_key)
                         continue
                     
-                    # If no exact match, try fuzzy matching (existing logic)
+                    # If no exact match, try fuzzy matching with ENHANCED alias checking
+                    cell_normalized = normalize_text(cell_key)
+                    
                     # Check all kwargs for matching keys
                     for key, value in kwargs.items():
                         if key in used_keys:
                             continue  # Skip already used keys
                         
-                        # Check if this is a protected heading
-                        key_lower = key.lower().strip()
-                        is_protected = any(protected in key_lower for protected in protected_headings)
-                        if is_protected:
-                            continue  # Skip protected headings in table matching
+                        # SMART PROTECTION: Only protect exact text section keywords
+                        key_normalized = normalize_text(key.replace('_', ' '))
+                        
+                        exact_text_section_keywords = [
+                            'preliminary expenses',
+                            'pre-operative expenses',
+                            'preoperative expenses',
+                            'misc fixed assets',
+                            'misc. fixed assets',
+                            'miscellaneous fixed assets',
+                            'contingency provisions',
+                            'contingency',
+                        ]
+                        
+                        # Only skip if user key is EXACTLY a simple text keyword
+                        is_exact_text_keyword = any(normalize_text(keyword) == key_normalized for keyword in exact_text_section_keywords)
+                        
+                        # But allow if cell text is much longer (table variant like "Preliminary & Pre-operative expenses")
+                        if is_exact_text_keyword and len(cell_normalized) <= len(key_normalized) + 10:
+                            continue  # Skip only simple text matches
+                        
+                        # Skip other protected headings
+                        other_protected = [
+                            'economics of the project',
+                            'technical aspects',
+                            'financial economic viability',
+                            'commercial viability',
+                            'risk mitigation framework',
+                            'swot analysis',
+                            'conclusion',
+                            'management and shareholding',
+                            'implementing arrangements',
+                            'eligibility as per guidelines',
+                        ]
+                        is_other_protected = any(protected in key_normalized for protected in other_protected)
+                        if is_other_protected:
+                            continue
                         
                         # Create searchable version of key
-                        search_key = key.replace('_', ' ').lower().strip()
-                        cell_lower = cell_key.lower().strip()
-                        
-                        # Remove common prefixes for better matching
-                        cell_cleaned = cell_lower
-                        for prefix in ['a. ', 'b. ', 'c. ', 'd. ', 'e. ', 'f. ', 'g. ', 'h. ', 'i. ', 'j. ', '(i)', '(ii)', '(iii)', '(iv)', '(v)', '(vi)', '(vii)', '(viii)', '(ix)', '(x)', '(xi)', '(xii)', '(xiii)', '(xiv)', '(xv)']:
-                            if cell_cleaned.startswith(prefix):
-                                cell_cleaned = cell_cleaned[len(prefix):].strip()
-                                break
+                        search_key = normalize_text(key.replace('_', ' '))
                         
                         # Calculate match score (higher = better match)
                         match_score = 0
                         
-                        # Exact match with cleaned cell gets highest score
-                        if search_key == cell_cleaned:
+                        # ENHANCED: Check alias match first (highest priority)
+                        if check_alias_match(key, cell_key):
+                            match_score = 15000  # Highest priority for alias matches
+                        # Exact match with normalized text
+                        elif search_key == cell_normalized:
                             match_score = 10000
-                        # Exact match with original cell
-                        elif search_key == cell_lower:
-                            match_score = 9000
-                        # Cell cleaned contains the full search key
-                        elif search_key in cell_cleaned and len(search_key) > 5:
+                        # Cell contains the full search key
+                        elif search_key in cell_normalized and len(search_key) > 5:
                             # Only if search key is significant portion of cell
-                            ratio = len(search_key) / len(cell_cleaned)
+                            ratio = len(search_key) / len(cell_normalized)
                             if ratio > 0.5:  # Search key is at least 50% of cell text
                                 match_score = 5000 + int(ratio * 1000)
                         # All words from search key present in cell
                         else:
                             search_words = set(search_key.split())
-                            cell_words = set(cell_cleaned.split())
+                            cell_words = set(cell_normalized.split())
                             
                             # Must have at least 2 words to consider word matching
                             if len(search_words) >= 2:
@@ -407,7 +493,7 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         used_keys.add(matched_key)
     else:
         add_text("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages")
-        add_text("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):")
+        add_text("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, exports, etc):")
     
     add_text("2.1.4. How the proposed CFC is relevant to the growth of the concerned cluster/ sector")
     story.append(Spacer(1, 4))
@@ -562,30 +648,25 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
             if key in used_keys:
                 continue
             # Check if the key matches the paragraph text
-            key_clean = key.lower().strip().replace('_', ' ')
-            para_clean = para_text.lower().strip()
-            
-            # Normalize spaces for better matching
-            import re
-            key_normalized = re.sub(r'\s+', ' ', key_clean)
-            para_normalized = re.sub(r'\s+', ' ', para_clean)
+            key_clean = normalize_text(key.replace('_', ' '))
+            para_clean = normalize_text(para_text)
             
             # Try exact match
-            if key_normalized == para_normalized:
+            if key_clean == para_clean:
                 eligibility_data[i][2] = str(value)
                 used_keys.add(key)
                 break
             
             # Try without spaces for typos
-            key_no_space = key_normalized.replace(' ', '')
-            para_no_space = para_normalized.replace(' ', '')
+            key_no_space = key_clean.replace(' ', '')
+            para_no_space = para_clean.replace(' ', '')
             if len(key_no_space) > 30 and key_no_space == para_no_space:
                 eligibility_data[i][2] = str(value)
                 used_keys.add(key)
                 break
             
             # Try if key contains significant part of paragraph (80%+ match)
-            if len(key_normalized) > 50 and len(para_normalized) > 50:
+            if len(key_clean) > 50 and len(para_clean) > 50:
                 # Check character overlap
                 if key_no_space in para_no_space or para_no_space in key_no_space:
                     overlap_ratio = min(len(key_no_space), len(para_no_space)) / max(len(key_no_space), len(para_no_space))
@@ -673,6 +754,20 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['4', '', ''],
     ]
     
+    # NEW: Row-number based filling for manpower table (BEFORE fill_table_data)
+    for i in range(1, 5):
+        desc_key = f"Description_of_employee_{i}"
+        num_key = f"Number_of_employee_{i}"
+        
+        if desc_key in kwargs and desc_key not in used_keys:
+            manpower_data[i][1] = str(kwargs[desc_key])
+            used_keys.add(desc_key)
+        
+        if num_key in kwargs and num_key not in used_keys:
+            manpower_data[i][2] = str(kwargs[num_key])
+            used_keys.add(num_key)
+    
+    # Then try generic matching for any remaining fields
     manpower_data = fill_table_data(manpower_data, kwargs)
     
     manpower_table = Table(manpower_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
@@ -744,6 +839,27 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', ''],
     ]
     
+    # FIXED: Special handling for Total in Project Cost table
+    # Check for Total (single value or list with one element) for this table
+    total_filled = False
+    if 'Total' in kwargs:
+        total_value = kwargs['Total']
+        # If it's a list, check if it has exactly one element
+        if isinstance(total_value, list):
+            if len(total_value) == 1:
+                cost_data[-1][2] = str(total_value[0])
+                total_filled = True
+        else:
+            # Single value - use it for Project Cost table
+            cost_data[-1][2] = str(total_value)
+            total_filled = True
+    
+    if not total_filled and 'Total_Project_Cost' in kwargs:
+        cost_data[-1][2] = str(kwargs['Total_Project_Cost'])
+        used_keys.add('Total_Project_Cost')
+        total_filled = True
+    
+    # Fill other fields
     cost_data = fill_table_data(cost_data, kwargs, table_context="project_cost")
     
     cost_table = Table(cost_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
@@ -780,6 +896,25 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['4', '', '', ''],
     ]
     
+    # NEW: Row-number based filling for machinery table (BEFORE fill_table_data)
+    for i in range(1, 5):
+        desc_key = f"Machinery_Description_{i}"
+        no_key = f"Machinery_No_{i}"
+        amount_key = f"Machinery_Amount_{i}"
+        
+        if desc_key in kwargs and desc_key not in used_keys:
+            machinery_data[i][1] = str(kwargs[desc_key])
+            used_keys.add(desc_key)
+        
+        if no_key in kwargs and no_key not in used_keys:
+            machinery_data[i][2] = str(kwargs[no_key])
+            used_keys.add(no_key)
+        
+        if amount_key in kwargs and amount_key not in used_keys:
+            machinery_data[i][3] = str(kwargs[amount_key])
+            used_keys.add(amount_key)
+    
+    # Then try generic matching
     machinery_data = fill_table_data(machinery_data, kwargs)
     
     machinery_table = Table(machinery_data, colWidths=[0.7*inch, 3.4*inch, 1*inch, 1.7*inch])
@@ -816,7 +951,44 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', '', ''],
     ]
     
+    # FIXED: Special handling for Total in Financing table
+    # Check for Total (list value with 2+ elements) for this table
+    total_filled = False
+    if 'Total' in kwargs:
+        total_value = kwargs['Total']
+        # If it's a list with 2 or more elements, use it for Financing table
+        if isinstance(total_value, list) and len(total_value) >= 2:
+            for i, val in enumerate(total_value):
+                if 2 + i < len(financing_data[-1]):
+                    financing_data[-1][2 + i] = str(val)
+            total_filled = True
+    
+    if not total_filled and 'Total_Financing' in kwargs:
+        total_val = kwargs['Total_Financing']
+        if isinstance(total_val, list):
+            for i, val in enumerate(total_val):
+                if 2 + i < len(financing_data[-1]):
+                    financing_data[-1][2 + i] = str(val)
+        else:
+            financing_data[-1][2] = str(total_val)
+        used_keys.add('Total_Financing')
+        total_filled = True
+    
+    # Fill other fields
     financing_data = fill_table_data(financing_data, kwargs, table_context="financing")
+    
+    # NEW: Row-number based filling for financing table first row
+    if 'Financing_Particulars' in kwargs and 'Financing_Particulars' not in used_keys:
+        financing_data[1][1] = str(kwargs['Financing_Particulars'])
+        used_keys.add('Financing_Particulars')
+    
+    if 'Financing_Percentage' in kwargs and 'Financing_Percentage' not in used_keys:
+        financing_data[1][2] = str(kwargs['Financing_Percentage'])
+        used_keys.add('Financing_Percentage')
+    
+    if 'Financing_Amount' in kwargs and 'Financing_Amount' not in used_keys:
+        financing_data[1][3] = str(kwargs['Financing_Amount'])
+        used_keys.add('Financing_Amount')
     
     financing_table = Table(financing_data, colWidths=[0.7*inch, 3.2*inch, 1.2*inch, 1.7*inch])
     financing_table.setStyle(TableStyle([
@@ -1032,7 +1204,7 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
 if __name__ == "__main__":
     try:
         print("\n" + "="*60)
-        print("  DPR DYNAMIC PDF GENERATOR")
+        print("  DPR DYNAMIC PDF GENERATOR - ENHANCED MATCHING")
         print("="*60)
         
         # Get basic inputs
@@ -1059,8 +1231,26 @@ if __name__ == "__main__":
         print("  Land_and_Building=50.00")
         print("  Age_years=[35,42,38]")
         print("  Profit=50 Lakhs")
-        print("  Total=500 (for Project Cost table)")
-        print("  Total=[10,20] (for Financing table)\n")
+        print("  Total=500 (for Project Cost table - single value)")
+        print("  Total=[60,300,140] (for Financing table - list values)")
+        print("\n  === ENHANCED: Smart matching now works! ===")
+        print("  Preliminary_expenses=25.50  → matches 'Preliminary & Pre-operative expenses'")
+        print("  Plant_and_Machinery=100.00  → matches 'Plant & Machinery including MFA...'")
+        print("  Margin_money=20.00         → matches 'Margin money for Working Capital'")
+        print("\n  === Empty Table Filling Examples ===")
+        print("  Manpower Table:")
+        print("    Description_of_employee_1=Manager")
+        print("    Number_of_employee_1=2")
+        print("    Description_of_employee_2=Technician")
+        print("    Number_of_employee_2=5")
+        print("\n  Machinery Table:")
+        print("    Machinery_Description_1=CNC Machine")
+        print("    Machinery_No_1=2")
+        print("    Machinery_Amount_1=25.00")
+        print("\n  Financing Table:")
+        print("    Financing_Particulars=GoI Grant")
+        print("    Financing_Percentage=60%")
+        print("    Financing_Amount=300.00\n")
         
         kwargs = {}
         
@@ -1090,7 +1280,7 @@ if __name__ == "__main__":
                 print(f"✓ Added: {key} = {value}")
         
         print(f"\n✓ Total {len(kwargs)} data fields captured!")
-        print("\nGenerating PDF...\n")
+        print("\nGenerating PDF with enhanced matching...\n")
         
         # Generate PDF
         pdf_file = create_dpr_pdf(project_name, candidate_name, address, **kwargs)

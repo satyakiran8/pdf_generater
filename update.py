@@ -19,6 +19,10 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         Location_of_Common_Facility_Centre="Industrial Area, Phase 2",
         Profit="50 Lakhs",
         Age_years=["35", "42", "38"],
+        Total=500,  # For BOTH tables! Single value for Project Cost
+        Total=[60, 300, 140],  # List for Financing table
+        Description_of_employee_1="Manager",
+        Number_of_employee_1="2"
     )
     """
     
@@ -85,8 +89,11 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         return None, None
     
     # Helper function to find and fill table values
-    def fill_table_data(table_data, kwargs):
-        """Fill table with values from kwargs based on key matching"""
+    def fill_table_data(table_data, kwargs, table_context=""):
+        """Fill table with values from kwargs based on key matching
+        
+        table_context: helps distinguish between multiple tables with same field names
+        """
         
         # List of protected heading keywords that should not be filled in tables
         protected_headings = [
@@ -127,7 +134,11 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
                         is_protected = any(protected in key_lower for protected in protected_headings)
                         
                         if not is_protected:
-                            # Found exact match - fill next column
+                            # Special handling for "Total" field - skip it here, handled in main code
+                            if cell_key.strip().lower() == 'total' and exact_key.lower() == 'total':
+                                continue
+                            
+                            # Found exact match - fill next column (for other fields)
                             if isinstance(exact_value, list):
                                 for i, val in enumerate(exact_value):
                                     if col_idx + 1 + i < len(row):
@@ -651,6 +662,20 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['4', '', ''],
     ]
     
+    # NEW: Row-number based filling for manpower table (BEFORE fill_table_data)
+    for i in range(1, 5):
+        desc_key = f"Description_of_employee_{i}"
+        num_key = f"Number_of_employee_{i}"
+        
+        if desc_key in kwargs and desc_key not in used_keys:
+            manpower_data[i][1] = str(kwargs[desc_key])
+            used_keys.add(desc_key)
+        
+        if num_key in kwargs and num_key not in used_keys:
+            manpower_data[i][2] = str(kwargs[num_key])
+            used_keys.add(num_key)
+    
+    # Then try generic matching for any remaining fields
     manpower_data = fill_table_data(manpower_data, kwargs)
     
     manpower_table = Table(manpower_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
@@ -722,7 +747,28 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', ''],
     ]
     
-    cost_data = fill_table_data(cost_data, kwargs)
+    # FIXED: Special handling for Total in Project Cost table
+    # Check for Total (single value or list with one element) for this table
+    total_filled = False
+    if 'Total' in kwargs:
+        total_value = kwargs['Total']
+        # If it's a list, check if it has exactly one element
+        if isinstance(total_value, list):
+            if len(total_value) == 1:
+                cost_data[-1][2] = str(total_value[0])
+                total_filled = True
+        else:
+            # Single value - use it for Project Cost table
+            cost_data[-1][2] = str(total_value)
+            total_filled = True
+    
+    if not total_filled and 'Total_Project_Cost' in kwargs:
+        cost_data[-1][2] = str(kwargs['Total_Project_Cost'])
+        used_keys.add('Total_Project_Cost')
+        total_filled = True
+    
+    # Fill other fields
+    cost_data = fill_table_data(cost_data, kwargs, table_context="project_cost")
     
     cost_table = Table(cost_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
     cost_table.setStyle(TableStyle([
@@ -760,6 +806,24 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
     
     machinery_data = fill_table_data(machinery_data, kwargs)
     
+    # NEW: Row-number based filling for machinery table
+    for i in range(1, 5):
+        desc_key = f"Machinery_Description_{i}"
+        no_key = f"Machinery_No_{i}"
+        amount_key = f"Machinery_Amount_{i}"
+        
+        if desc_key in kwargs and desc_key not in used_keys:
+            machinery_data[i][1] = str(kwargs[desc_key])
+            used_keys.add(desc_key)
+        
+        if no_key in kwargs and no_key not in used_keys:
+            machinery_data[i][2] = str(kwargs[no_key])
+            used_keys.add(no_key)
+        
+        if amount_key in kwargs and amount_key not in used_keys:
+            machinery_data[i][3] = str(kwargs[amount_key])
+            used_keys.add(amount_key)
+    
     machinery_table = Table(machinery_data, colWidths=[0.7*inch, 3.4*inch, 1*inch, 1.7*inch])
     machinery_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
@@ -794,7 +858,44 @@ def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
         ['', 'Total', '', ''],
     ]
     
-    financing_data = fill_table_data(financing_data, kwargs)
+    # FIXED: Special handling for Total in Financing table
+    # Check for Total (list value with 2+ elements) for this table
+    total_filled = False
+    if 'Total' in kwargs:
+        total_value = kwargs['Total']
+        # If it's a list with 2 or more elements, use it for Financing table
+        if isinstance(total_value, list) and len(total_value) >= 2:
+            for i, val in enumerate(total_value):
+                if 2 + i < len(financing_data[-1]):
+                    financing_data[-1][2 + i] = str(val)
+            total_filled = True
+    
+    if not total_filled and 'Total_Financing' in kwargs:
+        total_val = kwargs['Total_Financing']
+        if isinstance(total_val, list):
+            for i, val in enumerate(total_val):
+                if 2 + i < len(financing_data[-1]):
+                    financing_data[-1][2 + i] = str(val)
+        else:
+            financing_data[-1][2] = str(total_val)
+        used_keys.add('Total_Financing')
+        total_filled = True
+    
+    # Fill other fields
+    financing_data = fill_table_data(financing_data, kwargs, table_context="financing")
+    
+    # NEW: Row-number based filling for financing table first row
+    if 'Financing_Particulars' in kwargs and 'Financing_Particulars' not in used_keys:
+        financing_data[1][1] = str(kwargs['Financing_Particulars'])
+        used_keys.add('Financing_Particulars')
+    
+    if 'Financing_Percentage' in kwargs and 'Financing_Percentage' not in used_keys:
+        financing_data[1][2] = str(kwargs['Financing_Percentage'])
+        used_keys.add('Financing_Percentage')
+    
+    if 'Financing_Amount' in kwargs and 'Financing_Amount' not in used_keys:
+        financing_data[1][3] = str(kwargs['Financing_Amount'])
+        used_keys.add('Financing_Amount')
     
     financing_table = Table(financing_data, colWidths=[0.7*inch, 3.2*inch, 1.2*inch, 1.7*inch])
     financing_table.setStyle(TableStyle([
@@ -1037,7 +1138,22 @@ if __name__ == "__main__":
         print("  Land_and_Building=50.00")
         print("  Age_years=[35,42,38]")
         print("  Profit=50 Lakhs")
-        print("  Technology=AI-based automation\n")
+        print("  Total=500 (for Project Cost table - single value)")
+        print("  Total=[60,300,140] (for Financing table - list values)")
+        print("\n  === Empty Table Filling Examples ===")
+        print("  Manpower Table:")
+        print("    Description_of_employee_1=Manager")
+        print("    Number_of_employee_1=2")
+        print("    Description_of_employee_2=Technician")
+        print("    Number_of_employee_2=5")
+        print("\n  Machinery Table:")
+        print("    Machinery_Description_1=CNC Machine")
+        print("    Machinery_No_1=2")
+        print("    Machinery_Amount_1=25.00")
+        print("\n  Financing Table:")
+        print("    Financing_Particulars=GoI Grant")
+        print("    Financing_Percentage=60%")
+        print("    Financing_Amount=300.00\n")
         
         kwargs = {}
         
