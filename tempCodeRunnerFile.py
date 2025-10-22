@@ -1251,10 +1251,7 @@ if __name__ == "__main__":
         print("    Financing_Particulars=GoI Grant")
         print("    Financing_Percentage=60%")
         print("    Financing_Amount=300.00\n")
-        print("\n")
-        print("\nTotal_Project_Cost=500")
-        print("Total_Financing=[60%, 300.00]\n")
-        
+        println("     for ")
         
         kwargs = {}
         
