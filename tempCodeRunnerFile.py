@@ -1,1297 +1,538 @@
 import os
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-from reportlab.lib import colors
-from datetime import datetime
+import json
+from openai import OpenAI
 
-def create_dpr_pdf(project_name, candidate_name, address, **kwargs):
+# Import the original PDF generation function
+try:
+    from dpr_pdf_generator import create_dpr_pdf
+except ImportError:
+    print("Error: Please save the original 1300-line code as 'dpr_pdf_generator.py' in the same folder")
+    exit(1)
+
+# Initialize OpenAI client
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key="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"
+)
+
+def get_llm_mapping(user_input):
     """
-    Generate DPR PDF with dynamic data filling in both tables and text
-    
-    Usage:
-    create_dpr_pdf(
-        "My Project",
-        "John Doe", 
-        "123 Main St",
-        Location_of_Common_Facility_Centre="Industrial Area, Phase 2",
-        Profit="50 Lakhs",
-        Age_years=["35", "42", "38"],
-        Total=500,  # For BOTH tables! Single value for Project Cost
-        Total=[60, 300, 140],  # List for Financing table
-        Description_of_employee_1="Manager",
-        Number_of_employee_1="2",
-        Preliminary_expenses="25.50"  # Will match "Preliminary & Pre-operative expenses"
-    )
+    Enhanced LLM mapping with support for custom text sections, paragraphs, and bullet points
     """
     
-    # Track which keys have been used
-    used_keys = set()
-    
-    # ENHANCED: Add fuzzy matching aliases for common mismatches
-    # NOTE: These are ONLY for table matching, not text sections!
-    field_aliases = {
-        'land and building': ['land and building'],
-        'plant & machinery': ['plant & machinery including mfa'],
-        'plant and machinery': ['plant & machinery including mfa'],
-        # For table-specific full names (allow these even if text sections exist)
-        'preliminary & pre-operative expenses': ['preliminary & pre-operative expenses', 'preliminary and pre-operative expenses'],
-        'preliminary and pre-operative expenses': ['preliminary & pre-operative expenses'],
-    }
-    
-    def normalize_text(text):
-        """Normalize text for better matching"""
-        import re
-        if not isinstance(text, str):
-            return ""
-        # Convert to lowercase
-        text = text.lower().strip()
-        # Remove multiple spaces
-        text = re.sub(r'\s+', ' ', text)
-        # Remove common prefixes
-        prefixes = ['(i)', '(ii)', '(iii)', '(iv)', '(v)', '(vi)', '(vii)', '(viii)', 
-                   '(ix)', '(x)', '(xi)', '(xii)', '(xiii)', '(xiv)', '(xv)',
-                   'a.', 'b.', 'c.', 'd.', 'e.', 'f.', 'g.', 'h.', 'i.', 'j.',
-                   '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.']
-        for prefix in prefixes:
-            if text.startswith(prefix):
-                text = text[len(prefix):].strip()
-                break
-        # Remove trailing colons
-        text = text.rstrip(':').strip()
-        return text
-    
-    def check_alias_match(user_key, table_text):
-        """Check if user key matches table text via aliases"""
-        user_normalized = normalize_text(user_key)
-        table_normalized = normalize_text(table_text)
-        
-        # Direct match
-        if user_normalized == table_normalized:
-            return True
-        
-        # Check aliases
-        if user_normalized in field_aliases:
-            for alias in field_aliases[user_normalized]:
-                if normalize_text(alias) == table_normalized:
-                    return True
-        
-        # Reverse check - if table text is in aliases
-        if table_normalized in field_aliases:
-            for alias in field_aliases[table_normalized]:
-                if normalize_text(alias) == user_normalized:
-                    return True
-        
-        # Partial match - user key is significant part of table text
-        if len(user_normalized) > 5 and user_normalized in table_normalized:
-            # Check if it's at least 60% of the table text
-            ratio = len(user_normalized) / len(table_normalized)
-            if ratio > 0.6:
-                return True
-        
-        return False
-    
-    # Helper function to check if text matches a key exactly
-    def find_text_match(text, kwargs):
-        """Find exact match for text in kwargs keys"""
-        # Handle Paragraph objects
-        if hasattr(text, 'text'):
-            text = text.text
-        
-        if not isinstance(text, str):
-            return None, None
-            
-        text_clean = normalize_text(text)
-        
-        # Check for exact match with any key
-        for key, value in kwargs.items():
-            if key in used_keys:
-                continue
-                
-            key_clean = normalize_text(key.replace('_', ' '))
-            
-            # Exact match with normalized spaces
-            if text_clean == key_clean:
-                return key, value
-            
-            # Check alias match
-            if check_alias_match(key, text):
-                return key, value
-            
-            # Also try matching without spaces (for typos like "Rs.30.00crore")
-            text_no_space = text_clean.replace(' ', '')
-            key_no_space = key_clean.replace(' ', '')
-            if len(text_no_space) > 20 and text_no_space == key_no_space:
-                return key, value
-        
-        return None, None
-    
-    # Helper function to find and fill table values
-    def fill_table_data(table_data, kwargs, table_context=""):
-        """Fill table with values from kwargs based on key matching
-        
-        table_context: helps distinguish between multiple tables with same field names
-        """
-        
-        # List of protected heading keywords that should not be filled in tables
-        protected_headings = [
-            'economics of the project',
-            'technical aspects',
-            'financial economic viability',
-            'commercial viability',
-            'risk mitigation framework',
-            'swot analysis',
-            'conclusion',
-            'management and shareholding',
-            'implementing arrangements',
-            'eligibility as per guidelines',
-            # CRITICAL: Protect text section keywords from table matching
-            'preliminary expenses',
-            'pre-operative expenses',
-            'preoperative expenses',
-            'misc fixed assets',
-            'misc. fixed assets',
-            'miscellaneous fixed assets',
-            'contingency provisions',
-            'contingency',
-            'margin money for working capital',
-        ]
-        
-        for row_idx, row in enumerate(table_data):
-            for col_idx, cell in enumerate(row):
-                # Handle both string cells and Paragraph objects
-                cell_text = None
-                if isinstance(cell, str):
-                    cell_text = cell
-                elif hasattr(cell, 'text'):
-                    cell_text = cell.text
-                
-                if cell_text and cell_text.strip():
-                    # Clean the cell text for matching
-                    cell_key = cell_text.strip().replace('\n', ' ').replace('  ', ' ')
-                    
-                    best_match = None
-                    best_match_score = 0
-                    best_value = None
-                    
-                    # First check for exact text match (for standalone text in tables)
-                    exact_key, exact_value = find_text_match(cell_key, kwargs)
-                    if exact_key and exact_value:
-                        # Check if this is a protected heading (text section keyword)
-                        key_normalized = normalize_text(exact_key.replace('_', ' '))
-                        cell_normalized = normalize_text(cell_key)
-                        
-                        # SMART PROTECTION: Only protect if user key is EXACTLY a text section keyword
-                        # Don't protect if user is targeting the full table text
-                        exact_text_section_keywords = [
-                            'preliminary expenses',
-                            'pre-operative expenses',
-                            'preoperative expenses',
-                            'misc fixed assets',
-                            'misc. fixed assets',
-                            'miscellaneous fixed assets',
-                            'contingency provisions',
-                            'contingency',
-                        ]
-                        
-                        # Check if user's key is exactly a text section keyword (not table variant)
-                        is_exact_text_keyword = any(normalize_text(keyword) == key_normalized for keyword in exact_text_section_keywords)
-                        
-                        # Allow table filling if:
-                        # 1. User key is NOT exactly a text keyword, OR
-                        # 2. Cell text is longer/more specific than simple keyword (table variant)
-                        allow_table_fill = not is_exact_text_keyword or len(cell_normalized) > len(key_normalized) + 10
-                        
-                        if allow_table_fill:
-                            # Special handling for "Total" field - skip it here, handled in main code
-                            if cell_key.strip().lower() == 'total' and exact_key.lower() == 'total':
-                                continue
-                            
-                            # Found exact match - fill next column (for other fields)
-                            if isinstance(exact_value, list):
-                                for i, val in enumerate(exact_value):
-                                    if col_idx + 1 + i < len(row):
-                                        table_data[row_idx][col_idx + 1 + i] = str(val)
-                            else:
-                                if col_idx + 1 < len(row):
-                                    table_data[row_idx][col_idx + 1] = str(exact_value)
-                            used_keys.add(exact_key)
-                        continue
-                    
-                    # If no exact match, try fuzzy matching with ENHANCED alias checking
-                    cell_normalized = normalize_text(cell_key)
-                    
-                    # Check all kwargs for matching keys
-                    for key, value in kwargs.items():
-                        if key in used_keys:
-                            continue  # Skip already used keys
-                        
-                        # SMART PROTECTION: Only protect exact text section keywords
-                        key_normalized = normalize_text(key.replace('_', ' '))
-                        
-                        exact_text_section_keywords = [
-                            'preliminary expenses',
-                            'pre-operative expenses',
-                            'preoperative expenses',
-                            'misc fixed assets',
-                            'misc. fixed assets',
-                            'miscellaneous fixed assets',
-                            'contingency provisions',
-                            'contingency',
-                        ]
-                        
-                        # Only skip if user key is EXACTLY a simple text keyword
-                        is_exact_text_keyword = any(normalize_text(keyword) == key_normalized for keyword in exact_text_section_keywords)
-                        
-                        # But allow if cell text is much longer (table variant like "Preliminary & Pre-operative expenses")
-                        if is_exact_text_keyword and len(cell_normalized) <= len(key_normalized) + 10:
-                            continue  # Skip only simple text matches
-                        
-                        # Skip other protected headings
-                        other_protected = [
-                            'economics of the project',
-                            'technical aspects',
-                            'financial economic viability',
-                            'commercial viability',
-                            'risk mitigation framework',
-                            'swot analysis',
-                            'conclusion',
-                            'management and shareholding',
-                            'implementing arrangements',
-                            'eligibility as per guidelines',
-                        ]
-                        is_other_protected = any(protected in key_normalized for protected in other_protected)
-                        if is_other_protected:
-                            continue
-                        
-                        # Create searchable version of key
-                        search_key = normalize_text(key.replace('_', ' '))
-                        
-                        # Calculate match score (higher = better match)
-                        match_score = 0
-                        
-                        # ENHANCED: Check alias match first (highest priority)
-                        if check_alias_match(key, cell_key):
-                            match_score = 15000  # Highest priority for alias matches
-                        # Exact match with normalized text
-                        elif search_key == cell_normalized:
-                            match_score = 10000
-                        # Cell contains the full search key
-                        elif search_key in cell_normalized and len(search_key) > 5:
-                            # Only if search key is significant portion of cell
-                            ratio = len(search_key) / len(cell_normalized)
-                            if ratio > 0.5:  # Search key is at least 50% of cell text
-                                match_score = 5000 + int(ratio * 1000)
-                        # All words from search key present in cell
-                        else:
-                            search_words = set(search_key.split())
-                            cell_words = set(cell_normalized.split())
-                            
-                            # Must have at least 2 words to consider word matching
-                            if len(search_words) >= 2:
-                                common_words = search_words.intersection(cell_words)
-                                # All search words must be present
-                                if len(common_words) == len(search_words):
-                                    match_score = 3000 + len(common_words) * 100
-                                # Most search words present (at least 70%)
-                                elif len(common_words) >= len(search_words) * 0.7:
-                                    match_score = 1000 + len(common_words) * 50
-                        
-                        # Update best match if this is better
-                        if match_score > best_match_score:
-                            best_match_score = match_score
-                            best_match = key
-                            best_value = value
-                    
-                    # If we found a good match (score > 1000), fill it
-                    if best_match and best_match_score > 1000:
-                        # Handle list values (multiple columns)
-                        if isinstance(best_value, list):
-                            # Fill multiple columns with list values
-                            for i, val in enumerate(best_value):
-                                if col_idx + 1 + i < len(row):
-                                    table_data[row_idx][col_idx + 1 + i] = str(val)
-                        else:
-                            # Fill next column with single value
-                            if col_idx + 1 < len(row):
-                                table_data[row_idx][col_idx + 1] = str(best_value)
-                        
-                        # Mark this key as used
-                        used_keys.add(best_match)
-                        break  # Move to next row after filling
-        
-        return table_data
-    
-    # PDF filename with project name and timestamp
-    downloads_folder = os.path.join(os.path.expanduser("~"), "Downloads")
-    
-    # Remove invalid Windows filename characters
-    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-    safe_project_name = project_name
-    for char in invalid_chars:
-        safe_project_name = safe_project_name.replace(char, '')
-    
-    # Replace spaces with underscores and limit length
-    safe_project_name = safe_project_name.replace(" ", "_")[:50]
-    
-    filename = os.path.join(downloads_folder, f"DPR_{safe_project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
-    
-    # PDF document setup
-    doc = SimpleDocTemplate(filename, pagesize=A4,
-                           rightMargin=40, leftMargin=40,
-                           topMargin=30, bottomMargin=25)
-    
-    story = []
-    styles = getSampleStyleSheet()
-    
-    # Custom styles
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=13,
-        textColor=colors.black,
-        spaceAfter=3,
-        spaceBefore=1,
-        alignment=TA_CENTER,
-        bold=True,
-        leading=14
-    )
-    
-    heading_style = ParagraphStyle(
-        'CustomHeading',
-        parent=styles['Heading2'],
-        fontSize=11,
-        textColor=colors.black,
-        spaceAfter=2,
-        spaceBefore=1,
-        bold=True,
-        leading=12
-    )
-    
-    subheading_style = ParagraphStyle(
-        'CustomSubHeading',
-        parent=styles['Heading3'],
-        fontSize=10,
-        textColor=colors.black,
-        spaceAfter=2,
-        spaceBefore=1,
-        bold=True,
-        leading=11
-    )
-    
-    normal_style = ParagraphStyle(
-        'CustomNormal',
-        parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.black,
-        spaceAfter=1,
-        spaceBefore=0,
-        leading=10
-    )
-    
-    value_style = ParagraphStyle(
-        'ValueStyle',
-        parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.blue,
-        spaceAfter=1,
-        spaceBefore=0,
-        leading=10,
-        leftIndent=15
-    )
-    
-    # Helper to add text with optional value
-    def add_text(text, style=normal_style):
-        """Add text and check if it needs a value filled below it"""
-        story.append(Paragraph(text, style))
-        
-        # Check if this text matches any key
-        matched_key, value = find_text_match(text, kwargs)
-        if matched_key and value:
-            # Add value below the matched text
-            if isinstance(value, list):
-                value_text = ", ".join(str(v) for v in value)
-            else:
-                value_text = str(value)
-            
-            story.append(Paragraph(f"→ {value_text}", value_style))
-            used_keys.add(matched_key)
-    
-    # Header
-    story.append(Paragraph("New Guidelines MSE-CDP Page 18 of 44", normal_style))
-    story.append(Spacer(1, 3))
-    
-    # Title
-    story.append(Paragraph("Annexure-3", title_style))
-    story.append(Paragraph("Format of Detailed Proposal for CFC", title_style))
-    story.append(Spacer(1, 4))
-    
-    # Section 1
-    add_text("1. Proposal under consideration", heading_style)
-    story.append(Spacer(1, 2))
-    
-    # Section 2
-    add_text("2. Brief particulars of the proposal", heading_style)
-    story.append(Spacer(1, 2))
-    
-    # Section 2 Table
-    section2_data = [
-        ['Name of applicant,\ncontact details, etc', 'As CFC Registered address / administrative address may be different\nfrom CFC facilities address, the same may be provided'],
-        ['Location of Common\nFacility Centre', 'Address where facilities are proposed may be provided'],
-        ['Main facilities being\nproposed', 'Details of facilities to be provided']
-    ]
-    
-    # Fill with kwargs data
-    section2_data = fill_table_data(section2_data, kwargs)
-    
-    section2_table = Table(section2_data, colWidths=[2.3*inch, 4.5*inch])
-    section2_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(section2_table)
-    story.append(Spacer(1, 3))
-    
-    # Section 2.1
-    add_text("2.1. Introduction: brief about", subheading_style)
-    add_text("2.1.1. General scenario of industrial growth/ cluster development in the state")
-    add_text("2.1.2. Sector for which CFC is proposed to be set up")
-    
-    # Special handling for combined text - try both with and without prefix
-    combined_texts = [
-        "2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkagesBasic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):",
-        "Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkagesBasic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):"
-    ]
-    
-    matched_key = None
-    value = None
-    for combined_text in combined_texts:
-        matched_key, value = find_text_match(combined_text, kwargs)
-        if matched_key and value:
-            break
-    
-    if matched_key and value:
-        story.append(Paragraph("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages", normal_style))
-        story.append(Paragraph("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, etc):", normal_style))
-        if isinstance(value, list):
-            value_text = ", ".join(str(v) for v in value)
-        else:
-            value_text = str(value)
-        story.append(Paragraph(f"→ {value_text}", value_style))
-        used_keys.add(matched_key)
-    else:
-        add_text("2.1.3. Cluster and its products, future prospects of products, Competition scenario, Backward and forward linkages")
-        add_text("Basic data of cluster (Number of units, type of units [Micro/Small/Medium], employment [direct /indirect], turnover, exports, exports, etc):")
-    
-    add_text("2.1.4. How the proposed CFC is relevant to the growth of the concerned cluster/ sector")
-    story.append(Spacer(1, 4))
-    
-    # Section 3
-    add_text("3. Information about SPV", heading_style)
-    story.append(Spacer(1, 2))
-    
-    # Combine candidate name and address
-    name_address = f"{candidate_name}, {address}"
-    
-    # SPV Information Table
-    spv_data = [
-        ['S. No.', 'Description', 'Details/ Compliance'],
-        ['(i)', 'Name and address', name_address],
-        ['(ii)', 'Registration details of SPV\n(including registration as Section\n8 company under the Companies\nAct 2013)', ''],
-        ['(iii)', 'Names of the State Govt and\nMSME officials in SPV', ''],
-        ['(iv)', 'Date of formation of the\ncompany', ''],
-        ['(v)', 'Date of commencement of\nbusiness', ''],
-        ['(vi)', 'Number of MSE Member Units', ''],
-        ['(vii)', 'Bye laws or MoA and AoA\nsubmitted', ''],
-        ['(viii)', 'Main objectives of the SPV', ''],
-        ['(ix)', 'SPV to have a character of\ninclusiveness wherein provision\nfor enrolling new members to\nenable prospective entrepreneurs\nin the cluster to utilise the\nfacility', ''],
-        ['(x)', "Clause about 'Profits/surplus\n to be ploughed back\n to CFC' included or not", ''],
-        ['(xi)', 'Authorized share capital', ''],
-        ['(xii)', 'Shareholding Pattern\n(Annexure-3 to be filled in)', ''],
-    ]
-    
-    spv_data = fill_table_data(spv_data, kwargs)
-    
-    spv_table = Table(spv_data, colWidths=[0.5*inch, 2.8*inch, 3.5*inch])
-    spv_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(spv_table)
-    story.append(Spacer(1, 4))
-    
-    # Continue SPV table
-    spv_data2 = [
-        ['(xiii)', 'Commitment letter for SPV\nUpfront contribution', ''],
-        ['(xiv)', 'Project specific A/c in schedule\nA bank', ''],
-        ['(xv)', "Clause about 'CFC may be\n utilised by SPV members as also\nothers in a cluster and \nEvidence for SPV members'\nability to utilise at least 60% of installed capacity'", ''],
-        ['(xvi)', 'Main Role of SPV', ''],
-        ['(xvii)', 'Trust building of SPV so that\nCFC may be successful', ''],
-    ]
-    
-    spv_data2 = fill_table_data(spv_data2, kwargs)
-    
-    spv_table2 = Table(spv_data2, colWidths=[0.5*inch, 2.8*inch, 3.5*inch])
-    spv_table2.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(spv_table2)
-    story.append(Spacer(1, 4))
-    
-    # Section 4
-    add_text("4. Details of Project Promoters /Sponsors", heading_style)
-    add_text("(i) Brief bio-data of Promoters")
-    add_text("(ii) The details of the promoters are as under:")
-    story.append(Spacer(1, 4))
-    
-    # Promoters Table
-    promoters_data = [
-        ['Name of the\nOffice bearers\n of the SPV', '', '', '', '', '', '', ''],
-        ['Age (years)', '', '', '', '', '', '', ''],
-        ['Educational\n Qualification', '', '', '', '', '', '', ''],
-        ['Relationship with \nthe chief promoter', '', '', '', '', '', '', ''],
-        ['Experience in what\n capacity/ industry/ years', '', '', '', '', '', '', ''],
-        ['Income Tax / Wealth \nTax Status \n(returns for 3 years\n to be furnished)', '', '', '', '', '', '', ''],
-        ['Other concerns \ninterest / in which capacity \n/financial stake', '', '', '', '', '', '', '']
-    ]
-    
-    promoters_data = fill_table_data(promoters_data, kwargs)
+    system_prompt = """You are an expert DPR (Detailed Project Report) document analyzer. Your job is to extract information from natural language and map it to PDF fields INCLUDING custom text sections.
 
-    promoters_table = Table(promoters_data, colWidths=[1.2*inch, 0.4*inch, 0.8*inch, 0.8*inch, 1.0*inch, 1.1*inch, 0.6*inch, 0.5*inch])
-    promoters_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 7),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 2),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
+═══════════════════════════════════════════════════════════════
+NEW CAPABILITY: CUSTOM TEXT SECTIONS
+═══════════════════════════════════════════════════════════════
 
-    story.append(promoters_table)
-    story.append(Spacer(1, 4))
-    
-    # Additional details
-    add_text("(i) Brief about Compliance with KYC guidelines")
-    add_text("(ii) Details of connected lending - Whether the directors / promoters of SPV are having any directorship on any bank etc.")
-    add_text("(iii) Adverse auditors remarks, if any to be culled out from audit report, in case available. If SPV is new, it can be indicated as not applicable")
-    add_text("(iv) Particulars of previous assistance from financial institutions / banks - If SPV is new, it can be indicated as not applicable")
-    add_text("(v) Pending court cases initiated by other banks/FIs, if any - If SPV is new, it can be indicated as not applicable")
-    add_text("(vi) Management Set-up")
-    add_text("(vii) To indicate details regarding who will be the main persons involved in running of CFC, its operations etc.")
-    story.append(Spacer(1, 4))
-    
-    # Section 5 - Eligibility
-    add_text("5. Eligibility as per guidelines of MSE-CDP", heading_style)
-    story.append(Spacer(1, 4))
-    
-    # Eligibility data - DO NOT auto-fill this table, only manual override
-    eligibility_data = [
-        ['S.\nNo.', 'Eligibility Criteria', 'Comments'],
-        ['1.', Paragraph('The GoI grant will be restricted to 60% / 70% / 80% of the cost of Project of maximum Rs.30.00 crore as per the Scheme guidelines.', normal_style), ''],
-        ['2.', Paragraph('Cost of project includes cost of Land (subject to max. of 25% of Project Cost), building, pre-operative expenses, preliminary expenses, machinery & equipment, miscellaneous fixed assets, support infrastructure such as water supply, electricity and margin money for working capital.', normal_style), ''],
-        ['3.', Paragraph('The entire cost of land and building for CFC shall be met by SPV/State Government concerned.', normal_style), ''],
-        ['4.', Paragraph('In case existing land and building is provided by stakeholders, the cost of land and building will be decided on the basis of valuation report prepared by an approved agency of Central/State Govt. Departments/FIs/Public Sector Banks. Cost of land and building may be taken towards contribution for the project.', normal_style), ''],
-        ['5.', Paragraph('CFC can be set up in leased premises. However, the lease should be legally tenable and for a fairly long duration (say 15 years).', normal_style), ''],
-        ['6.', Paragraph('Escalation in the cost of project above the sanctioned amount, due to any reason, will be borne by the SPV/ State Government. The Central Government shall not accept any financial liability arising out of operation of any CFC.', normal_style), ''],
-        ['7.', Paragraph('DPR should be appraised by a bank (if bank financing is involved) / independent Technical Consultancy Organization/ SIDBI.', normal_style), ''],
-        ['8.', Paragraph('Proposals approved and forwarded by the concerned state government.', normal_style), ''],
-        ['9.', Paragraph('Evidence should be furnished with regard to SPV members ability to utilize at least 60% of installed capacity.', normal_style), ''],
-    ]
-    
-    # Manual filling for specific eligibility comments if provided
-    for i in range(1, 10):
-        key_name = f"Eligibility_Criteria_{i}_Comment"
-        if key_name in kwargs:
-            eligibility_data[i][2] = str(kwargs[key_name])
-            used_keys.add(key_name)
-    
-    # Alternative: Check for paragraph text match for eligibility
-    for i in range(1, 10):
-        para_text = eligibility_data[i][1].text if hasattr(eligibility_data[i][1], 'text') else ''
-        for key, value in kwargs.items():
-            if key in used_keys:
-                continue
-            # Check if the key matches the paragraph text
-            key_clean = normalize_text(key.replace('_', ' '))
-            para_clean = normalize_text(para_text)
-            
-            # Try exact match
-            if key_clean == para_clean:
-                eligibility_data[i][2] = str(value)
-                used_keys.add(key)
-                break
-            
-            # Try without spaces for typos
-            key_no_space = key_clean.replace(' ', '')
-            para_no_space = para_clean.replace(' ', '')
-            if len(key_no_space) > 30 and key_no_space == para_no_space:
-                eligibility_data[i][2] = str(value)
-                used_keys.add(key)
-                break
-            
-            # Try if key contains significant part of paragraph (80%+ match)
-            if len(key_clean) > 50 and len(para_clean) > 50:
-                # Check character overlap
-                if key_no_space in para_no_space or para_no_space in key_no_space:
-                    overlap_ratio = min(len(key_no_space), len(para_no_space)) / max(len(key_no_space), len(para_no_space))
-                    if overlap_ratio > 0.8:
-                        eligibility_data[i][2] = str(value)
-                        used_keys.add(key)
-                        break
-    
-    eligibility_table = Table(eligibility_data, colWidths=[0.4*inch, 5.5*inch, 0.9*inch])
-    eligibility_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
-        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-        ('ALIGN', (2, 0), (2, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(eligibility_table)
-    story.append(Spacer(1, 3))
-    
-    # Section 6
-    add_text("6. Implementing Arrangements", heading_style)
-    story.append(Spacer(1, 2))
-    
-    impl_data = [
-        ['Description', 'Compliance'],
-        ['a. Name of Implementation Agency', ''],
-        ['b. Role of Implementing Agency (e.g. implementation and monitoring of project,\nsending regular progress reports, issuing proper UCs, )', ''],
-        ['c. Implementation Period', ''],
-        ['d. Commitment of State Government upfront contribution', ''],
-        ['e. Commitment of Loans (Working capital and/ or term loan)', ''],
-    ]
-    
-    impl_data = fill_table_data(impl_data, kwargs)
-    
-    impl_table = Table(impl_data, colWidths=[4.6*inch, 2.2*inch])
-    impl_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 3),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(impl_table)
-    story.append(Spacer(1, 3))
-    
-    # Remaining sections
-    add_text("7. Management and shareholding details:", heading_style)
-    story.append(Spacer(1, 3))
-    
-    add_text("8. Technical Aspects:", heading_style)
-    add_text("(i) Scope of the project (including components/ sections of CFC)")
-    add_text("(ii) Locational details and availability of infrastructural facilities")
-    add_text("(iii) Technology")
-    add_text("(iv) Provision for Industry 4.0 of AI and innovations if any")
-    add_text("(v) Raw materials / components")
-    add_text("(vi) Utilities")
-    add_text("    (a) Power")
-    add_text("    (b) Water")
-    add_text("(vii) Effluent disposal")
-    add_text("(viii) Manpower")
-    add_text("The details of the manpower are as under:")
-    story.append(Spacer(1, 2))
-    
-    manpower_data = [
-        ['S. No.', 'Description of the employee', 'Number'],
-        ['1', '', ''],
-        ['2', '', ''],
-        ['3', '', ''],
-        ['4', '', ''],
-    ]
-    
-    # NEW: Row-number based filling for manpower table (BEFORE fill_table_data)
-    for i in range(1, 5):
-        desc_key = f"Description_of_employee_{i}"
-        num_key = f"Number_of_employee_{i}"
-        
-        if desc_key in kwargs and desc_key not in used_keys:
-            manpower_data[i][1] = str(kwargs[desc_key])
-            used_keys.add(desc_key)
-        
-        if num_key in kwargs and num_key not in used_keys:
-            manpower_data[i][2] = str(kwargs[num_key])
-            used_keys.add(num_key)
-    
-    # Then try generic matching for any remaining fields
-    manpower_data = fill_table_data(manpower_data, kwargs)
-    
-    manpower_table = Table(manpower_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
-    manpower_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(manpower_table)
-    story.append(Spacer(1, 4))
-    
-    # Section 9
-    add_text("9. Implementation Schedule:", heading_style)
-    story.append(Spacer(1, 2))
-    
-    schedule_data = [
-        ['Activities', 'Start Date', 'Completion Date'],
-        ['Preparation of Project Report', '', ''],
-        ['Sanction of Grant from Government of India', '', ''],
-        ['NOC from Pollution Control Board', '', ''],
-        ['Site Development', '', ''],
-        ['Building up-keep', '', ''],
-        ['Placement of order to equipment supplier', '', ''],
-        ['Supply of equipments by suppliers', '', ''],
-        ['Installation of equipments at site', '', ''],
-        ['Sanction of power connection', '', ''],
-        ['Trial Run', '', ''],
-        ['Commercial Production', '', ''],
-    ]
-    
-    schedule_data = fill_table_data(schedule_data, kwargs)
-    
-    schedule_table = Table(schedule_data, colWidths=[3.2*inch, 1.8*inch, 1.8*inch])
-    schedule_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(schedule_table)
-    story.append(Spacer(1, 2))
-    story.append(Paragraph("<b>Note:</b> PERT Chart for all activities to be accomplished in accordance with activity-wise time line as prescribed in MSE-CDP guidelines will mandatory be a part of DPR.", normal_style))
-    story.append(Spacer(1, 4))
-    
-    # Section 10
-    add_text("10. Project components:", heading_style)
-    add_text("(i) Estimated Project Cost (Rs. in lakh):", subheading_style)
-    story.append(Spacer(1, 2))
-    
-    cost_data = [
-        ['S. No.', 'Particulars', 'Amount'],
-        ['1', 'Land and Building', ''],
-        ['2', 'Plant & Machinery including MFA,\nInstallation, Taxes/duties,\nContingencies, etc.', ''],
-        ['3', 'Preliminary & Pre-operative expenses', ''],
-        ['4', 'Margin money for Working Capital', ''],
-        ['', 'Total', ''],
-    ]
-    
-    # FIXED: Special handling for Total in Project Cost table
-    # Check for Total (single value or list with one element) for this table
-    total_filled = False
-    if 'Total' in kwargs:
-        total_value = kwargs['Total']
-        # If it's a list, check if it has exactly one element
-        if isinstance(total_value, list):
-            if len(total_value) == 1:
-                cost_data[-1][2] = str(total_value[0])
-                total_filled = True
-        else:
-            # Single value - use it for Project Cost table
-            cost_data[-1][2] = str(total_value)
-            total_filled = True
-    
-    if not total_filled and 'Total_Project_Cost' in kwargs:
-        cost_data[-1][2] = str(kwargs['Total_Project_Cost'])
-        used_keys.add('Total_Project_Cost')
-        total_filled = True
-    
-    # Fill other fields
-    cost_data = fill_table_data(cost_data, kwargs, table_context="project_cost")
-    
-    cost_table = Table(cost_data, colWidths=[0.7*inch, 4.3*inch, 1.8*inch])
-    cost_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
-        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
-        ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(cost_table)
-    story.append(Spacer(1, 4))
-    
-    add_text("(ii) Details of Land, Site Development and Building & Civil Work")
-    story.append(Spacer(1, 3))
-    
-    add_text("(iii) Plant & Machinery:")
-    story.append(Paragraph("(Rs. in lakh)", normal_style))
-    story.append(Spacer(1, 2))
-    
-    machinery_data = [
-        ['S. No.', 'Description', 'No.', 'Amount'],
-        ['1', '', '', ''],
-        ['2', '', '', ''],
-        ['3', '', '', ''],
-        ['4', '', '', ''],
-    ]
-    
-    # NEW: Row-number based filling for machinery table (BEFORE fill_table_data)
-    for i in range(1, 5):
-        desc_key = f"Machinery_Description_{i}"
-        no_key = f"Machinery_No_{i}"
-        amount_key = f"Machinery_Amount_{i}"
-        
-        if desc_key in kwargs and desc_key not in used_keys:
-            machinery_data[i][1] = str(kwargs[desc_key])
-            used_keys.add(desc_key)
-        
-        if no_key in kwargs and no_key not in used_keys:
-            machinery_data[i][2] = str(kwargs[no_key])
-            used_keys.add(no_key)
-        
-        if amount_key in kwargs and amount_key not in used_keys:
-            machinery_data[i][3] = str(kwargs[amount_key])
-            used_keys.add(amount_key)
-    
-    # Then try generic matching
-    machinery_data = fill_table_data(machinery_data, kwargs)
-    
-    machinery_table = Table(machinery_data, colWidths=[0.7*inch, 3.4*inch, 1*inch, 1.7*inch])
-    machinery_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(machinery_table)
-    story.append(Spacer(1, 4))
-    
-    add_text("(iv) Comments on Plant and Machineries from O/o DC, MSME:")
-    add_text("(v) Misc. fixed assets")
-    add_text("(vi) Preliminary expenses")
-    add_text("(vii) Pre-operative expenses")
-    add_text("(viii) Contingency Provisions:")
-    add_text("(ix) Margin money for Working Capital")
-    story.append(Spacer(1, 3))
-    
-    add_text("(x) Proposed Means of Financing:")
-    story.append(Paragraph("(Rs. in lakh)", normal_style))
-    story.append(Spacer(1, 2))
-    
-    financing_data = [
-        ['S. No.', 'Particulars', 'Percentage', 'Amount'],
-        ['', '', '', ''],
-        ['', 'Total', '', ''],
-    ]
-    
-    # FIXED: Special handling for Total in Financing table
-    # Check for Total (list value with 2+ elements) for this table
-    total_filled = False
-    if 'Total' in kwargs:
-        total_value = kwargs['Total']
-        # If it's a list with 2 or more elements, use it for Financing table
-        if isinstance(total_value, list) and len(total_value) >= 2:
-            for i, val in enumerate(total_value):
-                if 2 + i < len(financing_data[-1]):
-                    financing_data[-1][2 + i] = str(val)
-            total_filled = True
-    
-    if not total_filled and 'Total_Financing' in kwargs:
-        total_val = kwargs['Total_Financing']
-        if isinstance(total_val, list):
-            for i, val in enumerate(total_val):
-                if 2 + i < len(financing_data[-1]):
-                    financing_data[-1][2 + i] = str(val)
-        else:
-            financing_data[-1][2] = str(total_val)
-        used_keys.add('Total_Financing')
-        total_filled = True
-    
-    # Fill other fields
-    financing_data = fill_table_data(financing_data, kwargs, table_context="financing")
-    
-    # NEW: Row-number based filling for financing table first row
-    if 'Financing_Particulars' in kwargs and 'Financing_Particulars' not in used_keys:
-        financing_data[1][1] = str(kwargs['Financing_Particulars'])
-        used_keys.add('Financing_Particulars')
-    
-    if 'Financing_Percentage' in kwargs and 'Financing_Percentage' not in used_keys:
-        financing_data[1][2] = str(kwargs['Financing_Percentage'])
-        used_keys.add('Financing_Percentage')
-    
-    if 'Financing_Amount' in kwargs and 'Financing_Amount' not in used_keys:
-        financing_data[1][3] = str(kwargs['Financing_Amount'])
-        used_keys.add('Financing_Amount')
-    
-    financing_table = Table(financing_data, colWidths=[0.7*inch, 3.2*inch, 1.2*inch, 1.7*inch])
-    financing_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(financing_table)
-    story.append(Spacer(1, 4))
-    
-    add_text("(xi) SPV contribution:")
-    add_text("(xii) Grant-in-aid from Govt. of India under MSE-CDP")
-    add_text("(xiii) Grant-in-aid from the State Government")
-    add_text("(xiv) Bank Loan/ others")
-    add_text("(xv) Arrangements for utilization of facilities by cluster units:")
-    story.append(Spacer(1, 4))
-    
-    add_text("11. Fund requirement / availability analysis: The details must be provided keeping in view that pace of the project is not suffered due to non-availability of funds in time.", heading_style)
-    story.append(Spacer(1, 3))
-    
-    add_text("12. Usage Charges:", heading_style)
-    story.append(Spacer(1, 3))
+Users can now add CUSTOM TEXT under ANY section heading by using these patterns:
 
-    add_text("13. Comments on Commercial viability:", heading_style)
-    story.append(Spacer(1, 4))
-    
-    add_text("14. Financial Economic viability:", heading_style)
-    story.append(Paragraph("Assumptions underlying the profitability estimates, projected cash flow statements and projected balance sheet are placed at Annexure and the summary of key parameters for the first 5 years are given below:-", normal_style))
-    story.append(Paragraph("                           (Rs. in lakh)", normal_style))
-    story.append(Spacer(1, 2))
-    
-    financial_data = [
-        ['S. No.', 'Particulars', 'FY 1', 'FY 2', 'FY3', 'FY4', 'FY5'],
-        ['1', 'Net Block', '', '', '', '', ''],
-        ['2', 'Current Assets (incl.\ncash/bank balance)', '', '', '', '', ''],
-        ['3', 'Current Liabilities (incl.\nprincipal installment falling\ndue during the year)', '', '', '', '', ''],
-        ['4', 'Long term borrowings', '', '', '', '', ''],
-        ['5', 'Capital', '', '', '', '', ''],
-        ['6', 'Reserves and Surplus', '', '', '', '', ''],
-        ['7', 'Unsecured loan', '', '', '', '', ''],
-        ['8', 'Net Worth (incl. GoI Subsidy\nas Quasi-equity)', '', '', '', '', ''],
-        ['9', 'Income', '', '', '', '', ''],
-        ['10', 'Gross profit', '', '', '', '', ''],
-        ['11', 'Depreciation', '', '', '', '', ''],
-        ['12', 'Profit after tax', '', '', '', '', ''],
-        ['13', 'Gross Cash Accruals', '', '', '', '', ''],
-    ]
-    
-    financial_data = fill_table_data(financial_data, kwargs)
-    
-    financial_table = Table(financial_data, colWidths=[0.4*inch, 2.4*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.7*inch, 0.7*inch])
-    financial_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (1, -1), 'LEFT'),
-        ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 7.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(financial_table)
-    story.append(Spacer(1, 3))
-    
-    add_text("The projected revenue of SPV is based upon the following major assumptions:")
-    story.append(Spacer(1, 4))
-    
-    # Section 15
-    add_text("15. Projected performance of the cluster after proposed intervention (in terms of production, domestic sales / exports and direct, indirect employment, etc.)", heading_style)
-    story.append(Spacer(1, 2))
-    
-    performance_data = [
-        ['Particulars', 'Before Intervention\nQty. / Outcome', 'After Intervention\nQty. / Outcome'],
-        ['Units (including\ndetails of\nSC/ST/Women\n/Minorities)', '', ''],
-        ['Employment', '', ''],
-        ['Production', '', ''],
-        ['Exports', '', ''],
-        ['Import Substitution', '', ''],
-        ['Number of patent\nexpected aimed', '', ''],
-        ['Investment', '', ''],
-        ['Turnover', '', ''],
-        ['Profit', '', ''],
-        ['Quality\nCertification', '', ''],
-        ['Any others (No. of\nZED certified\nunits)', '', ''],
-    ]
-    
-    performance_data = fill_table_data(performance_data, kwargs)
-    
-    performance_table = Table(performance_data, colWidths=[2.3*inch, 2.3*inch, 2.3*inch])
-    performance_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    
-    story.append(performance_table)
-    story.append(Spacer(1, 4))
-    
-    # Section 16
-    add_text("16. Status of Government approvals", heading_style)
-    add_text("(i) Pollution control")
-    add_text("(ii) Permission for land use (conversion for industrial purpose)")
-    story.append(Spacer(1, 4))
-    
-    # Section 17
-    add_text("17. Favorable and Risk Factors of the project : SWOT Analysis", heading_style)
-    story.append(Spacer(1, 4))
-    
-    # Section 18
-    add_text("18. Risk Mitigation Framework", heading_style)
-    story.append(Paragraph("Key risks during the implementation and operations phase of the Project and the mitigations measures thereof could be as below:", normal_style))
-    story.append(Spacer(1, 3))
-    add_text("During implementation:")
-    story.append(Spacer(1, 3))
-    add_text("During operations:")
-    story.append(Spacer(1, 4))
-    
-    # Section 19
-    add_text("19. Economics of the project", heading_style)
-    add_text("(a) Debt Service coverage ratio (Projections for 10 years)")
-    story.append(Spacer(1, 2))
-    
-    # DSCR Formula
-    dscr_formula = """<para align="center">
-    DSCR = (Net Profit + Interest(TL) + Depreciation) / (installment(TL) + Interest(TL))
-    </para>"""
-    story.append(Paragraph(dscr_formula, normal_style))
-    story.append(Spacer(1, 3))
-    
-    add_text("(b) Balance sheet & P/L account (projection for 10 years)")
-    story.append(Spacer(1, 3))
-    
-    # Break Even Formula
-    breakeven_formula = """<para align="left">
-    (c) Break Even Point = Fixed Cost / Contribution on Sales (Sales - Variable Cost)
-    </para>"""
-    story.append(Paragraph(breakeven_formula, normal_style))
-    story.append(Spacer(1, 4))
-    
-    # Section 20
-    add_text("20. Commercial Viability: Following financial appraisal tools will be employed for assessing commercial viability of the Project:", heading_style)
-    story.append(Spacer(1, 2))
-    
-    add_text("(i) Return on Capital Employed (ROCE):")
-    story.append(Paragraph("The total return generated by the project over its entire projected life will be averaged to find out the average yearly return. The simple acceptance rule for the investment is that the return (incorporating benefit of grant-in-aid assistance) is sufficiently larger than the interest on capital employed. Return in excess of 25% is desirable.", normal_style))
-    story.append(Spacer(1, 2))
-    
-    add_text("(ii) Debt Service Coverage Ratio:")
-    story.append(Paragraph("Acceptance rule will be cumulative DSCR of 3:1 during repayment period.", normal_style))
-    story.append(Spacer(1, 2))
-    
-    add_text("(iii) Break-Even (BE) Analysis:")
-    story.append(Paragraph("Break-even point should be below 60 per cent of the installed capacity.", normal_style))
-    story.append(Spacer(1, 2))
-    
-    add_text("(iv) Sensitivity Analysis:")
-    story.append(Paragraph("Sensitivity analysis will be pursued for all the major financial parameters/indicators in terms of a 5-10 per cent drop in user charges or fall in capacity utilisation by 10-20 per cent.", normal_style))
-    story.append(Spacer(1, 2))
-    
-    add_text("(v) Net Present Value (NPV):")
-    story.append(Paragraph("Net Present Value of the Project needs to be positive and the Internal Rate of return (IRR) should be above 10 per cent. The rate of discount to be adopted for estimation of NPV will be 10 per cent. The Project life may be considered to be a maximum of 10 years. The life of the Project to be considered for this purpose needs to be supported by recommendation of a technical expert/institution.", normal_style))
-    story.append(Spacer(1, 4))
-    
-    # Section 21
-    add_text("21. Conclusion", heading_style)
-    story.append(Spacer(1, 15))
-    
-    story.append(Paragraph("*****", ParagraphStyle('Center', parent=normal_style, alignment=TA_CENTER)))
-    
-    # Build PDF
-    doc.build(story)
-    
-    print(f"\n✓✓✓ PDF successfully created!")
-    print(f"✓ Project Name: {project_name}")
-    print(f"✓ Filename: {os.path.basename(filename)}")
-    print(f"✓ Location: {downloads_folder}")
-    print(f"✓ Full path: {filename}")
-    print(f"✓ Fields filled: {len(used_keys)} out of {len(kwargs)} provided")
-    
-    # Show which keys were used
-    if used_keys:
-        print(f"\n✓ Successfully filled keys:")
-        for key in sorted(used_keys):
-            print(f"  - {key}")
-    
-    # Show unused keys
-    unused = set(kwargs.keys()) - used_keys
-    if unused:
-        print(f"\n⚠ Unused keys (no exact match found):")
-        for key in sorted(unused):
-            print(f"  - {key}")
-    
-    return filename
+**Pattern 1: Section Text (Paragraphs under headings)**
+User says: "Under introduction write: This project aims to revolutionize textile manufacturing"
+→ Field: "Introduction_Text" = "This project aims to revolutionize textile manufacturing"
 
-# Run the function
-if __name__ == "__main__":
+User says: "Add description under technical aspects: The technology will use Industry 4.0 principles"
+→ Field: "Technical_Aspects_Text" = "The technology will use Industry 4.0 principles"
+
+**Pattern 2: Bullet Points/Lists**
+User says: "Objectives are: increase production, reduce costs, improve quality"
+→ Field: "Objectives_List" = ["increase production", "reduce costs", "improve quality"]
+
+User says: "Main benefits: 1) Higher efficiency 2) Better quality 3) Lower costs"
+→ Field: "Benefits_List" = ["Higher efficiency", "Better quality", "Lower costs"]
+
+**Pattern 3: Subsection Text**
+User says: "Under raw materials mention: Cotton sourced locally, imported synthetic fibers"
+→ Field: "Raw_materials_Text" = "Cotton sourced locally, imported synthetic fibers"
+
+**Pattern 4: Multi-paragraph Text**
+User says: "Add detailed description: First para about scope. Second para about benefits."
+→ Field: "Detailed_Description" = "First para about scope.\n\nSecond para about benefits."
+
+═══════════════════════════════════════════════════════════════
+SECTION-SPECIFIC TEXT FIELDS (Map user input to these)
+═══════════════════════════════════════════════════════════════
+
+**Section 2.1 - Introduction Texts:**
+- "Introduction_General_Text" → Text under "General scenario of industrial growth"
+- "Introduction_Sector_Text" → Text under "Sector for which CFC is proposed"
+- "Introduction_Cluster_Text" → Text under "Cluster and its products"
+- "Introduction_Relevance_Text" → Text under "How CFC is relevant"
+
+**Section 4 - Promoter Details Texts:**
+- "Brief_bio_data_of_Promoters" → Biography text
+- "Management_Setup_Text" → Management details text
+
+**Section 6 - Implementation:**
+- "Role_of_Implementing_Agency" → Agency role description
+
+**Section 8 - Technical Aspects Texts:**
+- "Scope_of_project_Text" → Project scope description
+- "Locational_details_Text" → Location description
+- "Technology_Text" → Technology description
+- "Industry_4_0_Text" → Industry 4.0 details
+- "Raw_materials_Text" → Raw materials description
+- "Power_Text" → Power requirements
+- "Water_Text" → Water requirements
+- "Effluent_disposal_Text" → Effluent disposal details
+
+**Section 10 - Project Components Texts:**
+- "Land_Building_Details_Text" → Land and building description
+- "Misc_fixed_assets" → Miscellaneous assets text
+- "Preliminary_expenses_Text" → Preliminary expenses description
+- "Pre-operative_expenses" → Pre-operative expenses text
+- "Contingency_Provisions" → Contingency details
+- "Working_Capital_Text" → Working capital description
+- "Usage_Charges_Text" → How facilities will be used
+
+**Section 11 - Fund Requirement:**
+- "Fund_requirement_analysis_Text" → Fund availability analysis
+
+**Section 12 - Usage Charges:**
+- "Usage_Charges_Details" → Detailed usage charges
+
+**Section 13 - Commercial Viability:**
+- "Commercial_viability_comments" → Viability comments
+
+**Section 17 - SWOT Analysis:**
+- "SWOT_Analysis_Text" → Full SWOT analysis
+- "Strengths_List" → List of strengths
+- "Weaknesses_List" → List of weaknesses
+- "Opportunities_List" → List of opportunities
+- "Threats_List" → List of threats
+
+**Section 18 - Risk Mitigation:**
+- "Risk_Implementation_Text" → Risks during implementation
+- "Risk_Operations_Text" → Risks during operations
+- "Mitigation_Measures_Text" → Mitigation measures
+
+**Section 21 - Conclusion:**
+- "Conclusion_Text" → Final conclusion paragraph
+
+═══════════════════════════════════════════════════════════════
+USER INPUT PATTERNS FOR TEXT SECTIONS
+═══════════════════════════════════════════════════════════════
+
+**Keywords that indicate text sections:**
+- "under [section] write/add/mention:"
+- "description of [section]:"
+- "[section] details:"
+- "add paragraph about:"
+- "include text:"
+- "write about:"
+
+**Examples:**
+
+Input: "Under introduction write: This CFC will serve 50 textile units in Hyderabad cluster"
+Output: "Introduction_Text" = "This CFC will serve 50 textile units in Hyderabad cluster"
+
+Input: "Technology description: We will use automated looms with IoT sensors for real-time monitoring"
+Output: "Technology_Text" = "We will use automated looms with IoT sensors for real-time monitoring"
+
+Input: "Add SWOT strengths: strong market demand, skilled workforce, government support"
+Output: "Strengths_List" = ["strong market demand", "skilled workforce", "government support"]
+
+Input: "Conclusion should say: This project will transform the textile sector in Telangana"
+Output: "Conclusion_Text" = "This project will transform the textile sector in Telangana"
+
+Input: "Raw materials para: Cotton will be sourced from local farmers. Dyes imported from Germany."
+Output: "Raw_materials_Text" = "Cotton will be sourced from local farmers. Dyes imported from Germany."
+
+═══════════════════════════════════════════════════════════════
+TABLE FIELDS (FROM PREVIOUS VERSION - KEEP ALL)
+═══════════════════════════════════════════════════════════════
+
+[All previous table field mappings remain the same - Total, Land_and_Building, etc.]
+
+**Project Cost Table (Section 10i):**
+- "Total" = "500"
+- "Land_and_Building" = "100"
+- "Plant_and_Machinery" = "200"
+- "Preliminary_&_Pre-operative_expenses" = "25"
+- "Margin_money_for_Working_Capital" = "50"
+
+**Manpower Table (Section 8):**
+- "Description_of_employee_1" = "Manager"
+- "Number_of_employee_1" = "2"
+- "Description_of_employee_2" = "Technician"
+- "Number_of_employee_2" = "5"
+
+**Machinery Table (Section 10iii):**
+- "Machinery_Description_1" = "CNC Machine"
+- "Machinery_No_1" = "2"
+- "Machinery_Amount_1" = "50"
+
+**Financial Viability (Section 14):**
+- "Net_Block" = ["100", "95", "90", "85", "80"]
+- "Income" = ["200", "250", "300", "350", "400"]
+- "Profit_after_tax" = ["20", "30", "40", "50", "60"]
+
+**Before/After Intervention (Section 15):**
+- "Units_Before_Intervention" = "50"
+- "Units_After_Intervention" = "100"
+- "Employment_Before_Intervention" = "200"
+- "Employment_After_Intervention" = "500"
+
+═══════════════════════════════════════════════════════════════
+EXTRACTION PRIORITY
+═══════════════════════════════════════════════════════════════
+
+1. **Extract ALL text sections first** (paragraphs, descriptions, lists)
+2. **Then extract table data** (costs, manpower, machinery)
+3. **Then extract basic info** (project name, candidate, address)
+
+This ensures custom text is not missed!
+
+═══════════════════════════════════════════════════════════════
+OUTPUT FORMAT (ENHANCED)
+═══════════════════════════════════════════════════════════════
+
+Return ONLY valid JSON:
+{
+  "project_name": "Extracted project name",
+  "candidate_name": "Extracted person/company name",
+  "address": "Full address",
+  "fields": {
+    "Total": "500",
+    "Land_and_Building": "100",
+    "Introduction_Text": "This CFC will revolutionize textile manufacturing in Hyderabad...",
+    "Technology_Text": "We will use Industry 4.0 automated systems...",
+    "SWOT_Analysis_Text": "Strengths include strong market demand...",
+    "Strengths_List": ["strong demand", "skilled workforce"],
+    "Conclusion_Text": "This project will create 500 jobs and boost exports...",
+    "Description_of_employee_1": "Manager",
+    "Number_of_employee_1": "2"
+  }
+}
+
+**CRITICAL RULES:**
+1. Look for text section indicators: "write", "add", "mention", "description", "under", "about"
+2. Map to correct _Text or _List field names
+3. For lists, use JSON arrays
+4. For paragraphs, keep as single strings (use \\n\\n for line breaks)
+5. Don't lose any table data while adding text sections
+6. Convert all numbers to strings
+7. Be intelligent about section matching:
+   - "introduction" → Introduction_Text
+   - "tech details" → Technology_Text
+   - "SWOT" → SWOT_Analysis_Text
+   - "conclusion" → Conclusion_Text
+
+Extract EVERYTHING from user input - both structured data AND custom text!"""
+
     try:
-        print("\n" + "="*60)
-        print("  DPR DYNAMIC PDF GENERATOR - ENHANCED MATCHING")
-        print("="*60)
+        response = client.chat.completions.create(
+            model="openai/gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"User input:\n\n{user_input}\n\nExtract ALL information including custom text sections, lists, and table data. Return only JSON."}
+            ],
+            temperature=0.2,
+            max_tokens=3000  # Increased for longer text sections
+        )
         
-        # Get basic inputs
-        print("\n=== Basic Information ===\n")
+        llm_output = response.choices[0].message.content.strip()
         
-        project_name = input("Project Name: ").strip()
-        candidate_name = input("Candidate/SPV Name: ").strip()
-        address = input("Address: ").strip()
-        
-        # Validate basic inputs
-        if not project_name or not candidate_name or not address:
-            print("\n✗ Error: Basic fields are required!")
-            exit(1)
-        
-        print("\n✓ Basic input captured!")
-        print("\n" + "="*60)
-        print("  DYNAMIC DATA INPUT")
-        print("="*60)
-        print("\nEnter key-value pairs to fill table fields AND text sections.")
-        print("Format: key=value")
-        print("For multiple values: key=[value1,value2,value3]")
-        print("Type 'done' when finished.\n")
-        print("Examples:")
-        print("  Land_and_Building=50.00")
-        print("  Age_years=[35,42,38]")
-        print("  Profit=50 Lakhs")
-        print("  Total=500 (for Project Cost table - single value)")
-        print("  Total=[60,300,140] (for Financing table - list values)")
-        print("\n  === ENHANCED: Smart matching now works! ===")
-        print("  Preliminary_expenses=25.50  → matches 'Preliminary & Pre-operative expenses'")
-        print("  Plant_and_Machinery=100.00  → matches 'Plant & Machinery including MFA...'")
-        print("  Margin_money=20.00         → matches 'Margin money for Working Capital'")
-        print("\n  === Empty Table Filling Examples ===")
-        print("  Manpower Table:")
-        print("    Description_of_employee_1=Manager")
-        print("    Number_of_employee_1=2")
-        print("    Description_of_employee_2=Technician")
-        print("    Number_of_employee_2=5")
-        print("\n  Machinery Table:")
-        print("    Machinery_Description_1=CNC Machine")
-        print("    Machinery_No_1=2")
-        print("    Machinery_Amount_1=25.00")
-        print("\n  Financing Table:")
-        print("    Financing_Particulars=GoI Grant")
-        print("    Financing_Percentage=60%")
-        print("    Financing_Amount=300.00\n")
-        println("     for ")
-        
-        kwargs = {}
-        
-        while True:
-            user_input = input("Enter data (or 'done'): ").strip()
-            
-            if user_input.lower() == 'done':
-                break
-            
-            if '=' not in user_input:
-                print("✗ Invalid format. Use: key=value")
-                continue
-            
-            key, value = user_input.split('=', 1)
-            key = key.strip()
-            value = value.strip()
-            
-            # Check if value is a list
-            if value.startswith('[') and value.endswith(']'):
-                # Parse list
-                value = value[1:-1]  # Remove brackets
-                value_list = [v.strip() for v in value.split(',')]
-                kwargs[key] = value_list
-                print(f"✓ Added: {key} = {value_list}")
+        # Extract JSON from response
+        if "```json" in llm_output:
+            json_str = llm_output.split("```json")[1].split("```")[0].strip()
+        elif "```" in llm_output:
+            json_str = llm_output.split("```")[1].split("```")[0].strip()
+        else:
+            start = llm_output.find('{')
+            end = llm_output.rfind('}') + 1
+            if start != -1 and end > start:
+                json_str = llm_output[start:end]
             else:
-                kwargs[key] = value
-                print(f"✓ Added: {key} = {value}")
+                json_str = llm_output
         
-        print(f"\n✓ Total {len(kwargs)} data fields captured!")
-        print("\nGenerating PDF with enhanced matching...\n")
+        parsed_data = json.loads(json_str)
+        return parsed_data
         
-        # Generate PDF
-        pdf_file = create_dpr_pdf(project_name, candidate_name, address, **kwargs)
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Parse Error: {e}")
+        print(f"LLM Output: {llm_output}")
+        return None
+    except Exception as e:
+        print(f"❌ Error calling LLM: {e}")
+        return None
+
+
+def generate_pdf_from_natural_input(user_input):
+    """
+    Main function with enhanced display for text sections
+    """
+    
+    print("\n" + "="*70)
+    print("  🤖 INTELLIGENT DPR PDF GENERATOR (WITH CUSTOM TEXT SUPPORT)")
+    print("="*70)
+    print("\n📊 Analyzing your input with AI (GPT-4)...\n")
+    
+    # Get LLM mapping
+    mapped_data = get_llm_mapping(user_input)
+    
+    if not mapped_data:
+        print("❌ Failed to process input with LLM")
+        return None
+    
+    # Extract basic info
+    project_name = mapped_data.get("project_name", "Untitled Project")
+    candidate_name = mapped_data.get("candidate_name", "Unknown")
+    address = mapped_data.get("address", "Not specified")
+    fields = mapped_data.get("fields", {})
+    
+    print("✅ AI successfully extracted the following information:")
+    print(f"\n📋 Project Name: {project_name}")
+    print(f"👤 Candidate/SPV: {candidate_name}")
+    print(f"📍 Address: {address}")
+    print(f"\n📊 Total fields extracted: {len(fields)}\n")
+    
+    # Categorize fields
+    text_fields = {}
+    list_fields = {}
+    cost_fields = {}
+    employee_fields = {}
+    machinery_fields = {}
+    financial_fields = {}
+    other_fields = {}
+    
+    for key, value in fields.items():
+        if isinstance(value, list) and not any(x in key for x in ['Net_Block', 'Income', 'Profit']):
+            list_fields[key] = value
+        elif '_Text' in key or '_Description' in key or 'Analysis' in key or key == 'Conclusion_Text':
+            text_fields[key] = value
+        elif any(x in key for x in ['Total', 'Land', 'Plant', 'Preliminary', 'Margin']):
+            cost_fields[key] = value
+        elif 'employee' in key:
+            employee_fields[key] = value
+        elif 'Machinery' in key:
+            machinery_fields[key] = value
+        elif any(x in key for x in ['Net_Block', 'Income', 'Profit', 'Current_Assets', 'Before_Intervention', 'After_Intervention']):
+            financial_fields[key] = value
+        else:
+            other_fields[key] = value
+    
+    # Display text sections prominently
+    if text_fields:
+        print("  📝 CUSTOM TEXT SECTIONS ADDED:")
+        for k, v in text_fields.items():
+            section_name = k.replace('_Text', '').replace('_', ' ')
+            preview = str(v)[:100] + "..." if len(str(v)) > 100 else str(v)
+            print(f"     • {section_name}:")
+            print(f"       '{preview}'")
+    
+    if list_fields:
+        print("\n  📋 LISTS/BULLET POINTS:")
+        for k, v in list_fields.items():
+            section_name = k.replace('_List', '').replace('_', ' ')
+            print(f"     • {section_name}:")
+            for item in v:
+                print(f"       - {item}")
+    
+    if cost_fields:
+        print("\n  💰 PROJECT COST FIELDS:")
+        for k, v in cost_fields.items():
+            print(f"     • {k}: ₹{v} lakhs")
+    
+    if employee_fields:
+        print("\n  👥 MANPOWER DETAILS:")
+        emp_dict = {}
+        for k, v in employee_fields.items():
+            if 'Description' in k:
+                num = k.split('_')[-1]
+                emp_dict[num] = {'desc': v}
+            elif 'Number' in k:
+                num = k.split('_')[-1]
+                if num not in emp_dict:
+                    emp_dict[num] = {}
+                emp_dict[num]['count'] = v
+        for num in sorted(emp_dict.keys()):
+            if 'desc' in emp_dict[num] and 'count' in emp_dict[num]:
+                print(f"     • {emp_dict[num]['desc']}: {emp_dict[num]['count']} persons")
+    
+    if machinery_fields:
+        print("\n  🔧 MACHINERY DETAILS:")
+        mach_dict = {}
+        for k, v in machinery_fields.items():
+            num = k.split('_')[-1]
+            if num not in mach_dict:
+                mach_dict[num] = {}
+            if 'Description' in k:
+                mach_dict[num]['desc'] = v
+            elif 'No' in k:
+                mach_dict[num]['count'] = v
+            elif 'Amount' in k:
+                mach_dict[num]['amount'] = v
+        for num in sorted(mach_dict.keys()):
+            if 'desc' in mach_dict[num]:
+                desc = mach_dict[num]['desc']
+                count = mach_dict[num].get('count', '?')
+                amount = mach_dict[num].get('amount', '?')
+                print(f"     • {desc}: {count} units @ ₹{amount} lakhs")
+    
+    if financial_fields:
+        print("\n  💹 FINANCIAL PROJECTIONS:")
+        for k, v in financial_fields.items():
+            if isinstance(v, list):
+                print(f"     • {k}: {v}")
+            else:
+                print(f"     • {k}: {v}")
+    
+    if other_fields:
+        print("\n  📝 OTHER FIELDS:")
+        for k, v in other_fields.items():
+            print(f"     • {k}: {v}")
+    
+    print("\n" + "="*70)
+    print("🔄 Generating PDF with all extracted data...")
+    print("="*70 + "\n")
+    
+    # Call the original PDF generation function
+    try:
+        pdf_path = create_dpr_pdf(
+            project_name=project_name,
+            candidate_name=candidate_name,
+            address=address,
+            **fields
+        )
         
-        print("\n" + "="*60)
-        print("  ✓✓✓ PDF CREATION SUCCESSFUL!")
-        print("="*60)
-        print(f"\nOpen the PDF to view your data!\n")
+        print("\n" + "="*70)
+        print("  ✅✅✅ SUCCESS! PDF GENERATED WITH CUSTOM TEXT")
+        print("="*70)
+        print(f"\n📄 PDF Location: {pdf_path}")
+        print(f"📂 Folder: {os.path.dirname(pdf_path)}")
+        
+        if text_fields:
+            print(f"\n✨ Your custom text was added to {len(text_fields)} sections!")
+        if list_fields:
+            print(f"📋 {len(list_fields)} lists/bullet points added!")
+        
+        print(f"\n💡 Total {len(fields)} fields mapped from your natural language input")
+        print(f"\n🎉 Open the PDF to see your data with custom text sections!\n")
+        
+        return pdf_path
         
     except Exception as e:
-        print(f"\n✗ Error occurred: {e}")
+        print(f"\n❌ Error generating PDF: {e}")
         import traceback
         traceback.print_exc()
+        return None
+
+
+def interactive_mode():
+    """
+    Interactive mode with enhanced examples including text sections
+    """
+    print("\n" + "="*70)
+    print("  🚀 INTELLIGENT DPR GENERATOR - WITH CUSTOM TEXT SUPPORT")
+    print("="*70)
+    print("\n💬 Describe your project naturally - including custom text sections!\n")
+    print("📝 NEW CAPABILITIES:\n")
+    
+    print("   ✨ Add Custom Text Under Any Heading:")
+    print("      'Under introduction write: This CFC will serve textile cluster'")
+    print("      'Technology description: Automated looms with IoT sensors'")
+    print("      'Add conclusion: This project will create 500 jobs'\n")
+    
+    print("   📋 Add Bullet Points/Lists:")
+    print("      'SWOT strengths: market demand, skilled workers, govt support'")
+    print("      'Benefits include: higher efficiency, better quality, lower costs'\n")
+    
+    print("   📄 Complete Example:\n")
+    print("   'Project: Textile Manufacturing CFC, Hyderabad")
+    print("    SPV: Hyderabad Textiles Ltd, Address: Secunderabad, Telangana")
+    print("    ")
+    print("    Total project cost: 500 lakhs")
+    print("    Land: 100 lakhs, Machinery: 200 lakhs")
+    print("    Working capital: 50 lakhs, Preliminary: 25 lakhs")
+    print("    ")
+    print("    Under introduction write: This CFC will revolutionize the textile")
+    print("    manufacturing sector in Hyderabad by providing state-of-art facilities")
+    print("    to 50 MSME units in the cluster.")
+    print("    ")
+    print("    Technology description: We will deploy automated power looms with")
+    print("    real-time IoT monitoring, Industry 4.0 compliant systems.")
+    print("    ")
+    print("    SWOT strengths: Strong market demand, skilled workforce available,")
+    print("    government support confirmed")
+    print("    ")
+    print("    Manpower: 2 managers, 5 technicians, 10 workers")
+    print("    Expected profit: 80 lakhs after intervention")
+    print("    ")
+    print("    Conclusion: This project will create 500 direct and indirect jobs,")
+    print("    increase cluster turnover by 200%, and boost textile exports.'\n")
+    
+    print("="*70)
+    print("\n📋 Enter your project details (type END on new line when done):\n")
+    
+    lines = []
+    while True:
+        try:
+            line = input()
+            if line.strip().upper() == "END":
+                break
+            lines.append(line)
+        except EOFError:
+            break
+    
+    user_input = "\n".join(lines)
+    
+    if not user_input.strip():
+        print("\n❌ No input provided!")
+        return
+    
+    # Generate PDF
+    generate_pdf_from_natural_input(user_input)
+
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--test":
+            # Enhanced test with custom text
+            test_input = """
+            Project name: Textile Manufacturing CFC
+            My name is Kiran Kumar, Address: Hyderabad, Telangana
+            
+            Total project cost: 500 lakhs breakdown:
+            - Land and building: 100 lakhs
+            - Machinery: 200 lakhs
+            - Preliminary expenses: 25 lakhs
+            - Working capital: 50 lakhs
+            
+            Under introduction write: This Common Facility Centre will serve 50 textile MSME units 
+            in the Hyderabad cluster. The project aims to provide world-class facilities including 
+            automated looms, testing labs, and design studios.
+            
+            Technology description: We will deploy Industry 4.0 compliant automated power looms 
+            with real-time IoT monitoring systems. The facility will have CAD/CAM design software 
+            and modern testing equipment for quality control.
+            
+            SWOT strengths: Strong domestic and export market demand, availability of skilled workforce, 
+            confirmed government support, proximity to raw material sources
+            
+            Manpower needed: 2 managers, 5 technicians, 3 supervisors, 10 workers
+            
+            Expected profit after intervention: 80 lakhs annually
+            
+            Add conclusion: This project will transform the textile manufacturing ecosystem in Telangana, 
+            creating 500 direct and indirect employment opportunities, increasing cluster turnover by 200%, 
+            and significantly boosting textile exports from the region.
+            """
+            print("🧪 Running enhanced test with custom text sections...\n")
+            generate_pdf_from_natural_input(test_input)
+        elif sys.argv[1] == "--help":
+            print("\nUsage:")
+            print("  python script.py          # Interactive mode")
+            print("  python script.py --test   # Run test with sample data")
+            print("  python script.py --help   # Show this help")
+            print("\nFeatures:")
+            print("  • Add custom text under any section")
+            print("  • Create bullet point lists")
+            print("  • Fill all table fields")
+            print("  • Natural language input")
+    else:
+        # Interactive mode
+        interactive_mode()
